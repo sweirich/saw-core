@@ -45,7 +45,9 @@ library
     transformers-compat,
     unordered-containers,
     utf8-string,
-    vector
+    vector,
+    what4,
+    parameterized-utils                               
   hs-source-dirs: src
   exposed-modules:
      Verifier.SAW
@@ -73,6 +75,8 @@ library
      Verifier.SAW.Simulator.RME.Base
      Verifier.SAW.Simulator.RME.Vector
      Verifier.SAW.Simulator.Value
+     Verifier.SAW.Simulator.What4
+     Verifier.SAW.Simulator.What4.SWord
      Verifier.SAW.SharedTerm
      Verifier.SAW.Term.Functor
      Verifier.SAW.Term.CtxTerm
