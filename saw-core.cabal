@@ -47,7 +47,8 @@ library
     utf8-string,
     vector,
     what4,
-    parameterized-utils                               
+    parameterized-utils,
+    reflection                               
   hs-source-dirs: src
   exposed-modules:
      Verifier.SAW
@@ -77,6 +78,7 @@ library
      Verifier.SAW.Simulator.Value
      Verifier.SAW.Simulator.What4
      Verifier.SAW.Simulator.What4.SWord
+     Verifier.SAW.Simulator.What4.FirstOrder
      Verifier.SAW.SharedTerm
      Verifier.SAW.Term.Functor
      Verifier.SAW.Term.CtxTerm

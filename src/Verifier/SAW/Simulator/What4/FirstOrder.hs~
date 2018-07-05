@@ -1,0 +1,74 @@
+
+{-
+
+
+
+-}
+-- Convert a saw-core type expression to a FirstOrder type expression
+-- Should we replace this with What4's notion of BaseType?
+vAsFirstOrderType :: forall sv. IsSymExprBuilder sv => SValue sv -> Maybe FirstOrderType
+vAsFirstOrderType v =
+  case v of
+    VBoolType
+      -> return FOTBit
+    VIntType
+      -> return FOTInt
+    VVecType (VNat n) v2
+      -> FOTVec (fromInteger n) <$> vAsFirstOrderType v2
+    VUnitType
+      -> return (FOTTuple [])
+    VPairType v1 v2
+      -> do t1 <- vAsFirstOrderType v1
+            t2 <- vAsFirstOrderType v2
+            case t2 of
+              FOTTuple ts -> return (FOTTuple (t1 : ts))
+              _ -> Nothing
+    VEmptyType
+      -> return (FOTRec Map.empty)
+    VFieldType k v1 v2
+      -> do t1 <- vAsFirstOrderType v1
+            t2 <- vAsFirstOrderType v2
+            case t2 of
+              FOTRec tm -> return (FOTRec (Map.insert k t1 tm))
+              _ -> Nothing
+    (asVTupleType -> Just vs)
+      -> FOTTuple <$> mapM vAsFirstOrderType vs
+    VRecordType tps
+      -> (FOTRec <$> Map.fromList <$>
+          mapM (\(f,tp) -> (f,) <$> vAsFirstOrderType tp) tps)
+    _ -> Nothing
+
+
+
+
+natReprToNat :: NatRepr n -> Nat
+natReprToNat = Nat . natValue 
+
+typeReprToFOT :: BaseTypeRepr ty -> Either String FirstOrderType
+typeReprToFOT BaseBoolRepr          = pure FOTBit
+typeReprToFOT BaseNatRepr           = pure FOTInt
+typeReprToFOT BaseIntegerRepr       = pure FOTInt
+typeReprToFOT BaseRealRepr          = fail "No FO Real"
+typeReprToFOT (BaseBVRepr w)        = pure $ FOTVec (natReprToNat w) FOTBit
+typeReprToFOT BaseComplexRepr       = fail "No FO Complex"
+typeReprToFOT BaseStringRepr        = fail "No FO String"
+typeReprToFOT (BaseArrayRepr ctx b) = fail "Ugh"
+typeReprToFOT (BaseStructRepr ctx)  = FOTTuple <$> assnToMap ctx
+
+assnToMap :: Assignment BaseTypeRepr ctx -> Either String [FirstOrderType]
+assnToMap = foldrFC g where
+--  g :: BaseTypeRepr x -> Either String [FirstOrderType] -> Either String [FirstOrderType]
+  g ty l = (:) <$> typeReprToFOT ty <*> l
+
+
+
+groundToFOV :: BaseTypeRepr ty -> GroundValue ty -> Either String FirstOrderValue
+groundToFOV BaseBoolRepr    b = pure $ FOVBit b
+groundToFOV BaseNatRepr     _ = fail "Natural undefined"
+groundToFOV BaseIntegerRepr i = pure $ FOVInt i
+groundToFOV BaseRealRepr    _ = fail "Real is not FOV"
+groundToFOV (BaseBVRepr w) bv = pure $ FOVWord (natReprToNat w) bv
+groundToFOV BaseComplexRepr _ = fail "Complex is not FOV"
+groundToFOV BaseStringRepr        _ = fail "String is not FOV"
+groundToFOV (BaseArrayRepr idx b) _ = fail "TODO"
+groundToFOV (BaseStructRepr ctx)  _ = fail "TODO"
