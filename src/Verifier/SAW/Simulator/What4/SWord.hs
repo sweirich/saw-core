@@ -1,3 +1,18 @@
+------------------------------------------------------------------------
+-- |
+-- Module      : Verifier.SAW.Simulator.What4
+-- Copyright   : Galois, Inc. 2012-2015
+-- License     : BSD3
+-- Maintainer  : sweirich@galois.com
+-- Stability   : experimental
+-- Portability : non-portable (language extensions)
+-- 
+-- A wrapper for What4 bitvectors so that the width is not tracked
+-- statically.
+-- This library is intended for use as a backend for saw-core. Therefore
+-- it does not include all of the operations from the What4.Interface.
+------------------------------------------------------------------------
+
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveTraversable #-}
@@ -15,7 +30,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
-
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
@@ -23,7 +37,6 @@
 -- need to use WithKnownNat in the definition of
 -- addNat'
 {-# OPTIONS_GHC -Wno-warnings-deprecations #-}
-
 
 -- TODO: module exports?
 module Verifier.SAW.Simulator.What4.SWord where
@@ -35,25 +48,23 @@ import Data.Parameterized.NatRepr
 import Data.Parameterized.Some(Some(..))
 import Data.Parameterized.Classes
 
--- import What4.BaseTypes
-import What4.Interface(SymBV,Pred,IsExprBuilder)
+import What4.Interface(SymBV,Pred,SymInteger,IsExprBuilder)
 import qualified What4.Interface as W
 
 import Data.Vector (Vector)
 import qualified Data.Vector as V
 
--- Question: how to handle partiality in this file??
--- throw errors in IO monad? use error?
+-- TODO: improve treatment of partiality. Currently, dynamic 
+-- failures (i.e. due to failing width checks) use 'fail' from
+-- the IO monad.
 
--- Question: what do the functions in What4.Interface take
+-- TODO: implement bit-rotation operations. (Currently fail.)
+ 
+-- Question: Why do the functions in What4.Interface take
 -- NatRepr's as arguments instead of implicit KnownNats ?
--- then could use TypeApplications instead of constructing these
+-- We then could use TypeApplications instead of constructing these
 -- repr's all over the place.
 
--- Question: this type can also represent zero-length bitvectors
--- Should it???
-
--------------------------------------------------------------
 -------------------------------------------------------------
 -- utilities for dependently typed programming
 
@@ -87,7 +98,7 @@ somePosNat n
 -- Add two numbers together and return a proof that their
 -- result is positive.
 -- I would hope that the 'leqAddPos' call can be compiled away
--- XXX TODO eliminate withKnownNat, but that requires updates
+-- TODO: could we eliminate withKnownNat? That requires updates
 -- to the Data.Parameterized.NatRepr interface
 addNat' :: forall w1 w2.
   (1 <= w1, 1 <= w2, KnownNat w1, KnownNat w2) => PosNat (w1 + w2)
@@ -98,7 +109,7 @@ addNat' =
 
 -------------------------------------------------------------
 --
--- A bitvector where the size does not appear in the type
+-- A What4 symbolic bitvector where the size does not appear in the type
 --
 
 data SWord sym where
@@ -108,14 +119,52 @@ data SWord sym where
   -- ^ a zero-length bit vector. i.e. 0
 -------------------------------------------------------------
 
+-- | Return the signed value if this is a constant bitvector
+bvAsSignedInteger :: forall sym. IsExprBuilder sym => SWord sym -> Maybe Integer
+bvAsSignedInteger ZBV = Just 0
+bvAsSignedInteger (DBV (bv :: SymBV sym w)) =
+  W.asSignedBV bv
+
+-- | Return the unsigned value if this is a constant bitvector
+bvAsUnsignedInteger :: forall sym. IsExprBuilder sym => SWord sym -> Maybe Integer
+bvAsUnsignedInteger ZBV = Just 0
+bvAsUnsignedInteger (DBV (bv :: SymBV sym w)) =
+  W.asUnsignedBV bv
+
+-- | Convert an integer to an unsigned bitvector.
+--   Result is undefined if integer is outside of range.
+integerToBV :: forall sym width. (Integral width, IsExprBuilder sym) =>
+  sym ->  SymInteger sym -> width -> IO (SWord sym)
+integerToBV sym i w 
+  | Just (Some (PosNat (_ :: Proxy w))) <- somePosNat (toInteger w)
+  = DBV <$> W.integerToBV sym i (repr @w)
+  | 0 == toInteger w
+  = return ZBV
+  | otherwise
+  = fail "integerToBV: invalid arg"
+
+bvToInteger :: forall sym. (IsExprBuilder sym) =>
+  sym -> SWord sym -> IO (SymInteger sym)
+bvToInteger sym ZBV      = W.intLit sym 0
+bvToInteger sym (DBV bv) = W.bvToInteger sym bv
+
+sbvToInteger :: forall sym. (IsExprBuilder sym) =>
+  sym -> SWord sym -> IO (SymInteger sym)
+sbvToInteger sym ZBV      = W.intLit sym 0
+sbvToInteger sym (DBV bv) = W.sbvToInteger sym bv 
+    
+
+-- | Get the width of a bitvector
 intSizeOf :: forall sym. SWord sym -> Int
 intSizeOf (DBV (_ :: SymBV sym w)) =
   fromIntegral (natValue (repr @w))
 intSizeOf ZBV = 0
 
-bvSize :: SWord sym -> Int
-bvSize = intSizeOf
+-- | Get the width of a bitvector
+bvWidth :: SWord sym -> Int
+bvWidth = intSizeOf
 
+-- | Create a bitvector with the given width and value
 bvLit :: forall sym. IsExprBuilder sym =>
   sym -> Int -> Integer -> IO (SWord sym)
 bvLit _ w _
@@ -125,44 +174,62 @@ bvLit sym w dat
   | Just (Some (PosNat (_ :: Proxy w))) <- somePosNat (toInteger w)
   = DBV <$> W.bvLit sym (repr @w) dat
   | otherwise
-  = error "bvLit: size of bitvector is < 0 or >= maxInt"
+  = fail "bvLit: size of bitvector is < 0 or >= maxInt"
 
+-- | Returns true if the corresponding bit in the bitvector is set.
 bvAt :: forall sym. IsExprBuilder sym =>
-  sym -> SWord sym -> Int -> IO (Pred sym)
+  sym ->
+  SWord sym ->
+  Int ->
+  -- ^ Index of bit (0 is the least significant bit)
+  IO (Pred sym)
 bvAt sym (DBV (bv :: SymBV sym w)) idx =
   W.testBitBV sym (toInteger idx) bv
-bvAt _ ZBV _ = error "cannot index into empty bitvector"
+bvAt _ ZBV _ = fail "cannot index into empty bitvector"
   -- TODO: or could return 0?
-  
+
+-- | Concatenate two bitvectors.
 bvJoin  :: forall sym. IsExprBuilder sym =>
-  sym -> SWord sym -> SWord sym -> IO (SWord sym)
+  sym ->
+  SWord sym ->
+  -- ^ most significant bits
+  SWord sym ->
+  -- ^ least significant bits
+  IO (SWord sym)
 bvJoin _ x ZBV = return x
 bvJoin _ ZBV x = return x
 bvJoin sym (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
   | PosNat _ <- addNat' @w1 @w2
   = DBV <$> (W.bvConcat sym bv1 bv2)
 
+-- | Select a subsequence from a bitvector.
+-- This fails if idx + n is >= the width of the bitvector
 bvSlice :: forall sym. IsExprBuilder sym =>
-  sym -> Int -> Int -> SWord sym -> IO (SWord sym)
+  sym ->
+  Int ->
+  -- ^ Starting index, from 0 as least significant bit
+  Int ->
+  -- ^ Number of bits to take (must be > 0)
+  SWord sym -> IO (SWord sym)
 bvSlice sym idx n (DBV (bv :: SymBV sym w))
   | Just (Some (PosNat (_ :: Proxy n))) <- somePosNat (toInteger n),    
     Just (SomeNat (_ :: Proxy idx))     <- someNatVal (toInteger idx),
     Just LeqProof <- testLeq (addNat (repr @idx) (repr @n)) (repr @w)
   = DBV <$> W.bvSelect sym (repr @idx) (repr @n) bv
   | otherwise
-  = error "invalid arguments to slice"
+  = fail "invalid arguments to slice"
 bvSlice _ _ _ ZBV = return ZBV
 
 -- | Ceiling (log_2 x)
 -- adapted from saw-core-sbv/src/Verifier/SAW/Simulator/SBV.hs
-w_bvLg2 :: forall sym w. (IsExprBuilder sym, 1 <= w) => NatRepr w ->
+w_bvLg2 :: forall sym w. (IsExprBuilder sym, KnownNat w, 1 <= w) => 
    sym -> SymBV sym w -> IO (SymBV sym w)
-w_bvLg2 w sym x = go 0
+w_bvLg2 sym x = go 0
   where
     size :: Integer
-    size = natValue w
+    size = natValue (repr @w)
     lit :: Integer -> IO (SymBV sym w)
-    lit n = W.bvLit sym w n
+    lit n = W.bvLit sym (repr @w) n
     go :: Integer -> IO (SymBV sym w)
     go i | i < size = do
            x' <- lit (2 ^ i)
@@ -172,7 +239,7 @@ w_bvLg2 w sym x = go 0
            W.bvIte sym b' th el
          | otherwise    = lit i
 
--- | If-then-else 
+-- | If-then-else applied to bitvectors.
 bvIte :: forall sym. IsExprBuilder sym =>
   sym -> Pred sym -> SWord sym -> SWord sym -> IO (SWord sym)
 bvIte _ _ ZBV ZBV
@@ -181,13 +248,14 @@ bvIte sym p (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
   | Just Refl <- testEquality (repr @w1) (repr @w2)    
   = DBV <$> W.bvIte sym p bv1 bv2
 bvIte _ _ _ _ 
-  = error "bit-vectors don't have same length"
+  = fail "bit-vectors don't have same length"
  
 
 ----------------------------------------------------------------------
 -- Convert to/from Vectors
 ----------------------------------------------------------------------
 
+-- | explode a bitvector into a vector of booleans
 bvUnpack :: forall sym. IsExprBuilder sym =>
   sym -> SWord sym -> IO (Vector (Pred sym))
 bvUnpack _   ZBV = return V.empty
@@ -195,6 +263,7 @@ bvUnpack sym (DBV (bv :: SymBV sym w)) =
   V.generateM (fromIntegral (natValue (repr @w)))
               (\x -> W.testBitBV sym (toInteger x) bv)
 
+-- | convert a vector of booleans to a bitvector
 bvPack :: forall sym. IsExprBuilder sym =>
   sym -> Vector (Pred sym) -> IO (SWord sym)
 bvPack sym vec = do
@@ -213,7 +282,7 @@ type SWordUn =
   sym -> SWord sym -> IO (SWord sym)
 
 bvUn ::  forall sym. IsExprBuilder sym =>
-   (forall w. 1 <= w => sym -> SymBV sym w -> IO (SymBV sym w)) ->
+   (forall w. (KnownNat w, 1 <= w) => sym -> SymBV sym w -> IO (SymBV sym w)) ->
    sym -> SWord sym -> IO (SWord sym)
 bvUn f sym (DBV (bv :: SymBV sym w)) = DBV <$> f sym bv
 bvUn _ _  ZBV = return ZBV
@@ -241,7 +310,7 @@ bvBin f sym (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
 bvBin _ _ ZBV ZBV
   = return ZBV  
 bvBin _ _ _ _ 
-  = error "bit vectors must have same length"
+  = fail "bit vectors must have same length"
 
 
 -- binary operations that return booleans (Pred)
@@ -251,10 +320,14 @@ bvBinPred  :: forall sym. IsExprBuilder sym =>
 bvBinPred f sym (DBV (bv1:: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
   | Just Refl <- testEquality (repr @w1) (repr @w2) 
   = f sym bv1 bv2
+  | otherwise
+  = fail $ "bit vectors must have same length" ++ show (repr @w1) ++ " " ++ show (repr @w2)
 bvBinPred _ _ ZBV ZBV
-  = error "no zero-length bit vectors here"  
+  = fail "no zero-length bit vectors here"  
 bvBinPred _ _ _ _ 
-  = error "bit vectors must have same length"
+  = fail $ "bit vectors must have same length"
+            
+    
 
  -- Bitvector logical
 
@@ -296,9 +369,8 @@ bvSDiv = bvBin W.bvSdiv
 bvSRem :: SWordBin
 bvSRem = bvBin W.bvSrem
 
--- TODO
 bvLg2 :: SWordUn
-bvLg2 = undefined
+bvLg2 = bvUn w_bvLg2
 
  -- Bitvector comparisons
 
@@ -329,29 +401,31 @@ bvuge = bvBinPred W.bvUge
 bvugt  :: PredBin
 bvugt = bvBinPred W.bvUgt
 
-----------------------------------------
--- Bitvector shift/rotate (prims)
--- TODO
-----------------------------------------
 
+-- Bitvector rotate (prims)
+
+-- TODO: What4 interface does not include rotate operations
   
 bvRolInt :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> Integer -> IO (SWord sym)
-bvRolInt = undefined              
+bvRolInt = fail "TODO:bvRolInt"              
+
 bvRorInt :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> Integer -> IO (SWord sym)
-bvRorInt = undefined
+bvRorInt = fail "TODO:bvRorInt"
 
 bvRol    :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> SWord sym -> IO (SWord sym)
-bvRol = undefined
+bvRol = fail "TODO: bvRol"
 
 bvRor    :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> SWord sym -> IO (SWord sym)
-bvRor = undefined
+bvRor = fail "TODO: bvRor"
 
 
--- in SBV: Defined in terms of svShl'
+-- Bitvector shift
+
+-- | logical shift left, amount specified by concrete integer
 bvShlInt :: forall sym. IsExprBuilder sym => sym ->
               Pred sym -> SWord sym -> Integer -> IO (SWord sym)
 bvShlInt sym p (DBV (bv :: SymBV sym w)) x
@@ -359,8 +433,7 @@ bvShlInt sym p (DBV (bv :: SymBV sym w)) x
 bvShlInt _ _ ZBV _
   = return ZBV 
 
--- By default this is logical (unsigned) shift right
--- in SBV: Defined in terms of svShr'           
+-- | logical (unsigned) shift right, specified by concrete integer
 bvShrInt :: forall sym. IsExprBuilder sym => sym ->
               Pred sym -> SWord sym -> Integer -> IO (SWord sym)
 bvShrInt sym p (DBV (bv :: SymBV sym w)) x
@@ -368,7 +441,7 @@ bvShrInt sym p (DBV (bv :: SymBV sym w)) x
 bvShrInt _ _ ZBV _
   = return ZBV
 
--- signed shift right
+-- | arithmetic (signed) shift right
 bvSShrInt :: forall sym. IsExprBuilder sym => sym ->
               Pred sym -> SWord sym -> Integer -> IO (SWord sym)
 bvSShrInt sym p (DBV (bv :: SymBV sym w)) x
@@ -377,48 +450,74 @@ bvSShrInt _ _ ZBV _
   = return ZBV   
 
 
--- in SBV: svShiftL
+-- | logical shift left, amount specified by (symbolic) bitvector
 bvShl    :: forall sym. IsExprBuilder sym => sym ->
-              Pred sym -> SWord sym -> SWord sym -> IO (SWord sym)
+              Pred sym ->
+              SWord sym ->
+              -- ^ shift this
+              SWord sym ->
+              -- ^ amount to shift by
+              IO (SWord sym)
 bvShl sym p (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
   | Just Refl <- testEquality (repr @w1) (repr @w2) 
   = DBV <$> bvShiftL sym p bv1 bv2
+  -- amount to shift by is smaller
+  | Just LeqProof <- testLeq (addNat (repr @w2) (repr @1)) (repr @w1)
+  = do bv2' <- W.bvZext sym (repr @w1) bv2
+       DBV <$> bvShiftL sym p bv1 bv2'
+  | otherwise
+  = fail $ "bvShl: bit vectors must have same length "
+            ++ show (repr @w1) ++ " " ++ show (repr @w2)
 bvShl _ _ ZBV ZBV
   = return ZBV
 bvShl _ _ _ _
-  = fail "bitvectors do not have the same length"
-
--- logical shiftRight
--- in SBV: svShiftR
+  = fail $ "bvShl: bitvectors do not have the same length"
+         
+         
+-- | logical shift right
 bvShr    :: forall sym. IsExprBuilder sym => sym ->
               Pred sym -> SWord sym -> SWord sym -> IO (SWord sym)
 bvShr  sym p (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
   | Just Refl <- testEquality (repr @w1) (repr @w2) 
   = DBV <$> bvShiftR sym (W.bvLshr sym) p bv1 bv2
+  | Just LeqProof <- testLeq (addNat (repr @w2) (repr @1)) (repr @w1)
+  = do bv2' <- W.bvZext sym (repr @w1) bv2
+       DBV <$> bvShiftR sym (W.bvLshr sym) p bv1 bv2'
+  | otherwise
+  = fail $ "bvShr: bitvectors do not have the same length "
+         ++ show (repr @w1) ++ " " ++ show (repr @w2)
 bvShr _ _ ZBV ZBV
   = return ZBV
 bvShr _ _ _ _
-  = fail "bitvectors do not have the same length"
+  = fail $ "bvShr: bitvectors do not have the same length"  
+         
 
--- arithmetic shiftRight
+-- | arithmetic shift right
 bvSShr    :: forall sym. IsExprBuilder sym => sym ->
               Pred sym -> SWord sym -> SWord sym -> IO (SWord sym)
 bvSShr  sym p (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
   | Just Refl <- testEquality (repr @w1) (repr @w2) 
   = DBV <$> bvShiftR sym (W.bvAshr sym) p bv1 bv2
+  | Just LeqProof <- testLeq (addNat (repr @w2) (repr @1)) (repr @w1)
+  = do bv2' <- W.bvSext sym (repr @w1) bv2
+       DBV <$> bvShiftR sym (W.bvAshr sym) p bv1 bv2'
+  | otherwise
+  = fail $ "bvSShr: bitvectors do not have the same length: "
+           ++ show (repr @w1) ++ " " ++ show (repr @w2)
 bvSShr _ _ ZBV ZBV
   = return ZBV
 bvSShr _ _ _ _
-  = fail "bitvectors do not have the same length"  
+  = fail $ "bvSShr: bitvectors do not have the same length: "
+    
     
 ----------------------------------------
--- Shift operations
+-- Shift operations 
 ----------------------------------------
 
--- The SBV code does this case on the predicate and then some
--- math. Not sure it is needed here. I guess it is trying to
--- control whether the newly added bit is a one (if b is true)
--- or a zero (if b is false).
+-- If the predicate is true, invert the bitvector, shift then
+-- invert again. (Following SBV definition). This means that
+-- the predicate controls whether the newly added bit is a one
+-- or a zero.
 
 bvShiftL :: forall sym w. (IsExprBuilder sym, 1 <= w) => sym ->
   Pred sym -> SymBV sym w -> SymBV sym w -> IO (SymBV sym w)
@@ -443,7 +542,7 @@ bvShiftR :: forall sym w. (IsExprBuilder sym, 1 <= w) => sym ->
   Pred sym -> SymBV sym w -> SymBV sym w -> IO (SymBV sym w)
 bvShiftR sym shr b x j = do
   nx   <- W.bvNotBits sym x
-  snx  <- W.bvShl sym nx j
+  snx  <- shr nx j
   nsnx <- W.bvNotBits sym snx
   W.bvIte sym b nsnx =<< shr x j  
 

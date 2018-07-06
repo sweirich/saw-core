@@ -27,6 +27,7 @@ import Data.Parameterized.TraversableFC (FoldableFC(..))
 import Data.Parameterized.Some
 import Data.Parameterized.Context 
 
+
 import Verifier.SAW.FiniteValue (FirstOrderType(..),FirstOrderValue(..))
 import Verifier.SAW.Prim (Nat(..))
 
@@ -46,18 +47,6 @@ data TypedExpr sym where
   TypedExpr :: BaseTypeRepr ty -> SymExpr sym ty -> TypedExpr sym
 
 ---------------------------------------------------------------------
-
--- | Generate a new variable from a given first-order-type
-
-newVarFOT :: forall sym. (IsSymExprBuilder sym, Given sym) =>
-   FirstOrderType -> StateT Int IO (TypedExpr sym)
-newVarFOT fot
-  | Some r <- fotToBaseType fot
-  = do nm <- nextId 
-       lift $ freshVar r nm
-       
-  | otherwise
-  = fail $ "Cannot convert FirstOrderType " ++ show fot ++ " to What4.BaseType"
 
 -- | Generate a new variable from a given BaseType
 
@@ -148,5 +137,6 @@ tupleToList (viewAssign -> AssignExtend rs r) (viewAssign -> AssignExtend gvs gv
 tupleToList _ _ = error "GADTs should rule this out."
 
 
-
+--labelToFOV :: Labeler sym -> Either String FirstOrderValue
+--labelToFOV (BaseLabel repr) 
 
