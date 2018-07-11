@@ -53,6 +53,7 @@ import qualified What4.Interface as W
 
 import Data.Vector (Vector)
 import qualified Data.Vector as V
+import Numeric.Natural
 
 -- TODO: improve treatment of partiality. Currently, dynamic 
 -- failures (i.e. due to failing width checks) use 'fail' from
@@ -405,29 +406,116 @@ bvuge = bvBinPred W.bvUge
 bvugt  :: PredBin
 bvugt = bvBinPred W.bvUgt
 
-
--- Bitvector rotate (prims)
-
--- TODO: What4 interface does not include rotate operations
+----------------------------------------
+-- Bitvector rotations
+----------------------------------------
   
 bvRolInt :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> Integer -> IO (SWord sym)
-bvRolInt = fail "TODO:bvRolInt"              
+bvRolInt sym (DBV (bv :: SymBV sym w)) i = do
+  i' <- W.intLit sym i
+  DBV <$> bvRotateL' sym bv i'
+bvRolInt _sym ZBV _i = return ZBV
 
+  
 bvRorInt :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> Integer -> IO (SWord sym)
-bvRorInt = fail "TODO:bvRorInt"
-
+bvRorInt sym (DBV (bv :: SymBV sym w)) i = do
+  i' <- W.intLit sym i
+  DBV <$> bvRotateR' sym bv i'
+bvRorInt _sym ZBV _i = return ZBV
+  
 bvRol    :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> SWord sym -> IO (SWord sym)
-bvRol = fail "TODO: bvRol"
+bvRol sym (DBV (bv :: SymBV sym w1)) (DBV (i :: SymBV sym w2)) = do
+  i' <- W.bvToInteger sym i
+  DBV <$> bvRotateL' sym bv i'
+bvRol _sym ZBV _i = return ZBV
+bvRol _sym (DBV bv) ZBV = return $ DBV bv
 
 bvRor    :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> SWord sym -> IO (SWord sym)
-bvRor = fail "TODO: bvRor"
+bvRor sym (DBV (bv :: SymBV sym w1)) (DBV (i :: SymBV sym w2)) = do
+  i' <- W.bvToInteger sym i
+  DBV <$> bvRotateR' sym bv i'
+bvRor _sym ZBV _i = return ZBV
+bvRor _sym (DBV bv) ZBV = return $ DBV bv
+
+-- Concrete implementation
+-- bvRotateL (BV w x) i = Prim.bv w ((x `shiftL` j) .|. (x `shiftR` (w - j)))
+--    where j = fromInteger (i `mod` toInteger w)
+
+bvRotateL :: forall sym w. (KnownNat w, IsExprBuilder sym, 1 <= w) => sym ->
+             SymBV sym w -> Integer -> IO (SymBV sym w)
+bvRotateL sym x i = do
+    x1 <- bvShl' sym (repr @w) pfalse x j
+    x2 <- bvShr' sym (W.bvLshr sym) (repr @w) pfalse x (w - j)
+    W.bvOrBits sym x1 x2             
+  where
+    pfalse :: Pred sym
+    pfalse = W.falsePred sym
+    
+    w :: Integer
+    w = natValue (repr @w)
+    
+    j :: Integer
+    j = i `mod` toInteger w
+
+-- Concrete implementation
+-- bvRotateL (BV w x) i = Prim.bv w ((x `shiftL` j) .|. (x `shiftR` (w - j)))
+--    where j = fromInteger (i `mod` toInteger w)
 
 
--- Bitvector shift
+bvRotateL' :: forall sym w1. (KnownNat w1, IsExprBuilder sym,
+                                  1 <= w1) => sym ->
+             SymBV sym w1 -> SymInteger sym -> IO (SymBV sym w1)
+bvRotateL' sym x i' = do
+  
+    -- w' :: SymNat sym
+    w' <- W.natLit sym w
+
+    -- j :: SymNat sym
+    (j :: W.SymNat sym) <- W.intMod sym i' w'
+
+    -- jj :: SymInteger sym
+    jj <- W.natToInteger sym j
+
+    -- jjj :: SimBV sym w
+    jjj <- W.integerToBV sym jj (repr @w1)
+    
+    x1 <- bvShiftL sym pfalse x jjj
+
+
+    -- wmj :: SymNat sym
+    wmj <- W.natSub sym w' j
+    wmjj <- W.natToInteger sym wmj
+    wmjjj <- W.integerToBV sym wmjj (repr @w1)
+    
+    x2 <- bvShiftR sym (W.bvLshr sym) pfalse x wmjjj
+    W.bvOrBits sym x1 x2             
+  where
+    pfalse :: Pred sym
+    pfalse = W.falsePred sym
+    
+    w :: Natural
+    w = fromInteger (natValue (repr @w1))
+    
+
+    
+
+bvRotateR :: forall sym w. (KnownNat w, IsExprBuilder sym, 1 <= w) => sym ->
+             SymBV sym w -> Integer -> IO (SymBV sym w)
+bvRotateR sym x i = bvRotateL sym x (- i)
+
+bvRotateR' :: forall sym w1. (KnownNat w1, IsExprBuilder sym,
+                                  1 <= w1) => sym ->
+             SymBV sym w1 -> SymInteger sym -> IO (SymBV sym w1)
+bvRotateR' sym x i = do
+  ii <- W.intNeg sym i
+  bvRotateL' sym x ii
+----------------------------------------
+-- Bitvector shifts (prims)
+----------------------------------------
 
 -- | logical shift left, amount specified by concrete integer
 bvShlInt :: forall sym. IsExprBuilder sym => sym ->
