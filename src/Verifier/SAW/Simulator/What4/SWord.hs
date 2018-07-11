@@ -203,21 +203,25 @@ bvJoin sym (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
   = DBV <$> (W.bvConcat sym bv1 bv2)
 
 -- | Select a subsequence from a bitvector.
--- This fails if idx + n is >= the width of the bitvector
+-- idx = w - (m + n)
+-- This fails if idx + n is >= w
 bvSlice :: forall sym. IsExprBuilder sym =>
   sym ->
   Int ->
-  -- ^ Starting index, from 0 as least significant bit
+  -- ^ Starting index, from 0 as most significant bit
   Int ->
   -- ^ Number of bits to take (must be > 0)
   SWord sym -> IO (SWord sym)
-bvSlice sym idx n (DBV (bv :: SymBV sym w))
-  | Just (Some (PosNat (_ :: Proxy n))) <- somePosNat (toInteger n),    
-    Just (SomeNat (_ :: Proxy idx))     <- someNatVal (toInteger idx),
-    Just LeqProof <- testLeq (addNat (repr @idx) (repr @n)) (repr @w)
-  = DBV <$> W.bvSelect sym (repr @idx) (repr @n) bv
+bvSlice sym m n (DBV (bv :: SymBV sym w))
+  | Just (Some (PosNat (_ :: Proxy n))) <- somePosNat (toInteger n),
+    Just (SomeNat (_ :: Proxy m))     <- someNatVal (toInteger m),
+    Just LeqProof <- testLeq (addNat (repr @m) (repr @n)) (repr @w),
+    let idx = subNat (repr @w) (addNat (repr @m) (repr @n)), 
+    Just LeqProof <- testLeq (addNat idx (repr @n)) (repr @w)
+  = DBV <$> W.bvSelect sym idx (repr @n) bv
   | otherwise
-  = fail "invalid arguments to slice"
+  = fail $
+      "invalid arguments to slice: " ++ show m ++ " " ++ show n ++ " from vector of length " ++ show (repr @w)
 bvSlice _ _ _ ZBV = return ZBV
 
 -- | Ceiling (log_2 x)

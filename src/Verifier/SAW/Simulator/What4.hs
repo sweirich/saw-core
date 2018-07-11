@@ -34,10 +34,6 @@
 
 {-# OPTIONS_GHC -fdefer-type-errors #-}
 
-{-# OPTIONS_GHC -Wno-unused-imports #-}
-{-# OPTIONS_GHC -Wno-unused-matches #-}
-{-# OPTIONS_GHC -Wno-unused-top-binds #-}
-
 
 -- WithKnownNat
 {-# OPTIONS_GHC -Wno-warnings-deprecations #-}
@@ -55,8 +51,6 @@ module Verifier.SAW.Simulator.What4
 
 import qualified Control.Arrow as A
 
-import Data.Bits
-import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -67,26 +61,21 @@ import Data.Traversable as T
 #if !MIN_VERSION_base(4,8,0)
 import Control.Applicative
 #endif
-import Control.Monad.IO.Class
 import Control.Monad.State as ST
 
 import qualified Verifier.SAW.Recognizer as R
 import qualified Verifier.SAW.Simulator as Sim
 import qualified Verifier.SAW.Simulator.Prims as Prims
-import Verifier.SAW.Prim (Nat(..))
 import Verifier.SAW.SharedTerm
 import Verifier.SAW.Simulator.Value
 import Verifier.SAW.TypedAST (FieldName, ModuleMap, identName)
-import Verifier.SAW.FiniteValue (FirstOrderType(..),asFirstOrderType)
+import Verifier.SAW.FiniteValue (FirstOrderType(..))
 
-import What4.Interface(SymExpr,Pred,SymInteger,IsExprBuilder,IsSymExprBuilder,userSymbol)
+import           What4.Interface(SymExpr,Pred,SymInteger,IsExprBuilder,IsSymExprBuilder)
 import qualified What4.Interface as W
-import What4.BaseTypes
-import GHC.TypeLits
-import What4.Expr.GroundEval
+import           What4.BaseTypes
 
 import Data.Reflection (Given(..))
-import Data.Parameterized.NatRepr (natValue)
 import Data.Parameterized.Some
 
 import Data.Proxy
@@ -137,7 +126,7 @@ prims =
   , Prims.bpBvLit   = bvLit    sym 
   , Prims.bpBvSize  = intSizeOf
   , Prims.bpBvJoin  = bvJoin   sym 
-  , Prims.bpBvSlice = bvSlice  sym
+  , Prims.bpBvSlice = bvSlice  sym  
     -- Conditionals
   , Prims.bpMuxBool  = W.itePred sym 
   , Prims.bpMuxWord  = bvIte     sym
@@ -392,7 +381,7 @@ parseUninterpreted nm ty =
       | Just (Some (PosNat (_::Proxy n))) <- somePosNat n 
       -> (VWord . DBV) <$> mkUninterpreted @sym nm (BaseBVRepr (repr @n))
 
-    VVecType (VNat 0) ety
+    VVecType (VNat 0) _
       -> fail "TODO: 0-width non-bitvectors unsupported"
 
     VVecType (VNat n) ety
@@ -434,7 +423,7 @@ mkUninterpreted :: forall sym t. (Given sym, IsSymExprBuilder sym) =>
   String -> BaseTypeRepr t -> IO (SymExpr sym t)
 mkUninterpreted nm rep = 
   case W.userSymbol nm of
-    Left err -> fail $ "Cannot create uninterpreted constant " ++ nm
+    Left err -> fail $ show err ++ ":Cannot create uninterpreted constant " ++ nm
     Right s  -> W.freshConstant (given :: sym) s rep
 
 
@@ -456,8 +445,8 @@ flattenSValue v = do
                                     return (concat sxs)
     VVector (V.toList -> ts)  -> do ss <- traverse (force >=> flattenSValue) ts
                                     return (concat ss)
-    VBool sb                  -> return ("")
-    VWord sw                  -> return ("")
+    VBool _sb                 -> return ("")
+    VWord _sw                 -> return ("")
     VCtorApp i (V.toList->ts) -> do ss <- traverse (force >=> flattenSValue) ts
                                     return ("_" ++ identName i ++ concat ss)
     VNat n                    -> return ("_" ++ show n)
