@@ -78,6 +78,7 @@ library
      Verifier.SAW.Simulator.Value
      Verifier.SAW.Simulator.What4
      Verifier.SAW.Simulator.What4.SWord
+     Verifier.SAW.Simulator.What4.PosNat
      Verifier.SAW.Simulator.What4.FirstOrder
      Verifier.SAW.SharedTerm
      Verifier.SAW.Term.Functor

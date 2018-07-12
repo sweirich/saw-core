@@ -1,7 +1,7 @@
 ------------------------------------------------------------------------
 -- |
--- Module      : Verifier.SAW.Simulator.What4
--- Copyright   : Galois, Inc. 2012-2015
+-- Module      : Verifier.SAW.Simulator.What4.SWord
+-- Copyright   : Galois, Inc. 2018
 -- License     : BSD3
 -- Maintainer  : sweirich@galois.com
 -- Stability   : experimental
@@ -10,7 +10,7 @@
 -- A wrapper for What4 bitvectors so that the width is not tracked
 -- statically.
 -- This library is intended for use as a backend for saw-core. Therefore
--- it does not include all of the operations from the What4.Interface.
+-- it does not wrap all of the bitvector operations from the What4.Interface.
 ------------------------------------------------------------------------
 
 {-# LANGUAGE ConstraintKinds #-}
@@ -32,92 +32,61 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+
+-- To allow implicitly provided nats
 {-# LANGUAGE AllowAmbiguousTypes #-}
 
--- need to use WithKnownNat in the definition of
--- addNat'
-{-# OPTIONS_GHC -Wno-warnings-deprecations #-}
 
 -- TODO: module exports?
 module Verifier.SAW.Simulator.What4.SWord where
 
 
-import GHC.TypeLits
-import Data.Proxy(Proxy(..))
-import Data.Parameterized.NatRepr
-import Data.Parameterized.Some(Some(..))
-import Data.Parameterized.Classes
-
-import What4.Interface(SymBV,Pred,SymInteger,IsExprBuilder)
-import qualified What4.Interface as W
-
-import Data.Vector (Vector)
-import qualified Data.Vector as V
-import Numeric.Natural
-
 -- TODO: improve treatment of partiality. Currently, dynamic 
--- failures (i.e. due to failing width checks) use 'fail' from
--- the IO monad.
+-- failures (e.g. due to failing width checks) use 'fail' from
+-- the IO monad. Perhaps this is what we want, as the saw-core
+-- code should come in type checked.
 
--- TODO: implement bit-rotation operations. (Currently fail.)
- 
 -- Question: Why do the functions in What4.Interface take
 -- NatRepr's as arguments instead of implicit KnownNats ?
 -- We then could use TypeApplications instead of constructing these
 -- repr's all over the place.
+-- Overall, the operations below are a bit random about whether they
+-- require an implicit or explicit type argument.
 
--------------------------------------------------------------
--- utilities for dependently typed programming
+import           Data.Vector (Vector)
+import qualified Data.Vector as V
+import           Numeric.Natural
 
--- Construct the representation of a number in a way that
--- works well with TypeApplications. 'knownRepr' is too polymorphic
--- and requires two additional type arguments before n.
-repr :: KnownNat n => NatRepr n
-repr = knownRepr
+import qualified Text.PrettyPrint.ANSI.Leijen as PP
 
--- Runtime nats that are also positive.
--- We include the KnownNat constraint instead of a NatRepr value
--- so that we can avoid using withKnownNat
--- The 'Proxy' is necessary to allow binding 'n' when this
--- type is used as part of 'Some'
-data PosNat (n :: Nat) where
-  PosNat :: (1 <= n, KnownNat n) => Proxy n -> PosNat n
+import           GHC.TypeLits
 
+import           Data.Parameterized.NatRepr
+import           Data.Parameterized.Some(Some(..))
+import           Verifier.SAW.Simulator.What4.PosNat
 
--- This should be added to GHC.TypeLits so that the redundant
--- check for positivity can be removed
--- annoyingly, we cannot do this check without already
--- knowing that w >= 0
-somePosNat :: Integer -> Maybe (Some PosNat)
-somePosNat n 
-  | Just (SomeNat (_ :: Proxy n)) <- someNatVal (toInteger n), 
-    Just LeqProof <- testLeq (repr @1) (repr @n) 
-  = Just (Some (PosNat @n Proxy))
-  | otherwise
-  = Nothing
+import           What4.Interface(SymBV,Pred,SymInteger,IsExpr,SymExpr,IsExprBuilder)
+import qualified What4.Interface as W
 
--- Add two numbers together and return a proof that their
--- result is positive.
--- I would hope that the 'leqAddPos' call can be compiled away
--- TODO: could we eliminate withKnownNat? That requires updates
--- to the Data.Parameterized.NatRepr interface
-addNat' :: forall w1 w2.
-  (1 <= w1, 1 <= w2, KnownNat w1, KnownNat w2) => PosNat (w1 + w2)
-addNat' =
-  withKnownNat (addNat (repr @w1) (repr @w2)) $
-  case (leqAddPos (repr @w1) (repr @w2)) of
-    LeqProof -> PosNat @(w1 + w2) Proxy
 
 -------------------------------------------------------------
 --
--- A What4 symbolic bitvector where the size does not appear in the type
+-- | A What4 symbolic bitvector where the size does not appear in the type
 --
 
 data SWord sym where
-  DBV :: (KnownNat w, 1<=w)  => SymBV sym w -> SWord sym
+  
+  DBV :: (IsExpr (SymExpr sym), KnownNat w, 1<=w) => SymBV sym w -> SWord sym
   -- ^ a bit-vector with positive length
+  
   ZBV :: SWord sym
   -- ^ a zero-length bit vector. i.e. 0
+
+
+instance Show (SWord sym) where
+  show (DBV bv) = show $ W.printSymExpr bv
+  show ZBV      = "0:[0]"
+  
 -------------------------------------------------------------
 
 -- | Return the signed value if this is a constant bitvector
@@ -137,18 +106,20 @@ bvAsUnsignedInteger (DBV (bv :: SymBV sym w)) =
 integerToBV :: forall sym width. (Integral width, IsExprBuilder sym) =>
   sym ->  SymInteger sym -> width -> IO (SWord sym)
 integerToBV sym i w 
-  | Just (Some (PosNat (_ :: Proxy w))) <- somePosNat (toInteger w)
-  = DBV <$> W.integerToBV sym i (repr @w)
+  | Just (Some (PosNat wr)) <- somePosNat (toInteger w)
+  = DBV <$> W.integerToBV sym i wr
   | 0 == toInteger w
   = return ZBV
   | otherwise
   = fail "integerToBV: invalid arg"
 
+-- | Interpret the bit-vector as an unsigned integer
 bvToInteger :: forall sym. (IsExprBuilder sym) =>
   sym -> SWord sym -> IO (SymInteger sym)
 bvToInteger sym ZBV      = W.intLit sym 0
 bvToInteger sym (DBV bv) = W.bvToInteger sym bv
 
+-- | Interpret the bit-vector as a signed integer
 sbvToInteger :: forall sym. (IsExprBuilder sym) =>
   sym -> SWord sym -> IO (SymInteger sym)
 sbvToInteger sym ZBV      = W.intLit sym 0
@@ -158,7 +129,7 @@ sbvToInteger sym (DBV bv) = W.sbvToInteger sym bv
 -- | Get the width of a bitvector
 intSizeOf :: forall sym. SWord sym -> Int
 intSizeOf (DBV (_ :: SymBV sym w)) =
-  fromIntegral (natValue (repr @w))
+  fromIntegral (natValue (knownNat @w))
 intSizeOf ZBV = 0
 
 -- | Get the width of a bitvector
@@ -172,8 +143,8 @@ bvLit _ w _
   | w == 0
   = return ZBV
 bvLit sym w dat
-  | Just (Some (PosNat (_ :: Proxy w))) <- somePosNat (toInteger w)
-  = DBV <$> W.bvLit sym (repr @w) dat
+  | Just (Some (PosNat (_ :: NatRepr w))) <- somePosNat (toInteger w)
+  = DBV <$> W.bvLit sym (knownNat @w) dat
   | otherwise
   = fail "bvLit: size of bitvector is < 0 or >= maxInt"
 
@@ -184,7 +155,8 @@ bvAt :: forall sym. IsExprBuilder sym =>
   Int ->
   -- ^ Index of bit (0 is the least significant bit)
   IO (Pred sym)
-bvAt sym (DBV (bv :: SymBV sym w)) idx =
+bvAt sym (DBV (bv :: SymBV sym w)) idx = do
+  -- print $ "indexing at " ++ show idx
   W.testBitBV sym (toInteger idx) bv
 bvAt _ ZBV _ = fail "cannot index into empty bitvector"
   -- TODO: or could return 0?
@@ -200,8 +172,8 @@ bvJoin  :: forall sym. IsExprBuilder sym =>
 bvJoin _ x ZBV = return x
 bvJoin _ ZBV x = return x
 bvJoin sym (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
-  | PosNat _ <- addNat' @w1 @w2
-  = DBV <$> (W.bvConcat sym bv1 bv2)
+  | PosNat _ <- addPosNat @w1 @w2
+  = DBV <$> W.bvConcat sym bv1 bv2
 
 -- | Select a subsequence from a bitvector.
 -- idx = w - (m + n)
@@ -214,15 +186,17 @@ bvSlice :: forall sym. IsExprBuilder sym =>
   -- ^ Number of bits to take (must be > 0)
   SWord sym -> IO (SWord sym)
 bvSlice sym m n (DBV (bv :: SymBV sym w))
-  | Just (Some (PosNat (_ :: Proxy n))) <- somePosNat (toInteger n),
-    Just (SomeNat (_ :: Proxy m))     <- someNatVal (toInteger m),
-    Just LeqProof <- testLeq (addNat (repr @m) (repr @n)) (repr @w),
-    let idx = subNat (repr @w) (addNat (repr @m) (repr @n)), 
-    Just LeqProof <- testLeq (addNat idx (repr @n)) (repr @w)
-  = DBV <$> W.bvSelect sym idx (repr @n) bv
+  | Just (Some (PosNat nr)) <- somePosNat (toInteger n),
+    Just (Some mr)          <- someNat (toInteger m),
+    let wr  = knownNat @w,
+    Just LeqProof <- testLeq (addNat mr nr)  wr,
+    let idx = subNat wr (addNat mr nr),
+    Just LeqProof <- testLeq (addNat idx nr) wr
+  = DBV <$> W.bvSelect sym idx nr bv
   | otherwise
   = fail $
-      "invalid arguments to slice: " ++ show m ++ " " ++ show n ++ " from vector of length " ++ show (repr @w)
+      "invalid arguments to slice: " ++ show m ++ " " ++ show n
+        ++ " from vector of length " ++ show (knownNat @w)
 bvSlice _ _ _ ZBV = return ZBV
 
 -- | Ceiling (log_2 x)
@@ -232,13 +206,13 @@ w_bvLg2 :: forall sym w. (IsExprBuilder sym, KnownNat w, 1 <= w) =>
 w_bvLg2 sym x = go 0
   where
     size :: Integer
-    size = natValue (repr @w)
+    size = natValue (knownNat @w)
     lit :: Integer -> IO (SymBV sym w)
-    lit n = W.bvLit sym (repr @w) n
+    lit n = W.bvLit sym (knownNat @w) n
     go :: Integer -> IO (SymBV sym w)
     go i | i < size = do
            x' <- lit (2 ^ i)
-           b' <- W.bvSle sym x x'  --- TODO: should this be sle or ule ?
+           b' <- W.bvUle sym x x'  
            th <- lit (toInteger i)
            el <- go (i + 1)
            W.bvIte sym b' th el
@@ -250,7 +224,7 @@ bvIte :: forall sym. IsExprBuilder sym =>
 bvIte _ _ ZBV ZBV
   = return ZBV  
 bvIte sym p (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
-  | Just Refl <- testEquality (repr @w1) (repr @w2)    
+  | Just Refl <- testEquality (knownNat @w1) (knownNat @w2)    
   = DBV <$> W.bvIte sym p bv1 bv2
 bvIte _ _ _ _ 
   = fail "bit-vectors don't have same length"
@@ -260,24 +234,32 @@ bvIte _ _ _ _
 -- Convert to/from Vectors
 ----------------------------------------------------------------------
 
+-- | for debugging
+showVec :: forall sym. (W.IsExpr (W.SymExpr sym)) => Vector (Pred sym) -> String
+showVec vec = 
+  show (PP.list (V.toList (V.map W.printSymExpr vec)))
+
 -- | explode a bitvector into a vector of booleans
 bvUnpack :: forall sym. IsExprBuilder sym =>
   sym -> SWord sym -> IO (Vector (Pred sym))
 bvUnpack _   ZBV = return V.empty
-bvUnpack sym (DBV (bv :: SymBV sym w)) =
-  V.generateM (fromIntegral (natValue (repr @w)))
-              (\x -> W.testBitBV sym (toInteger x) bv)
+bvUnpack sym (DBV (bv :: SymBV sym w)) = do
+  let w :: Integer
+      w = natValue (knownNat @w)
+  vec <- V.generateM (fromIntegral w)
+              (\i -> W.testBitBV sym (w - 1 - toInteger i) bv)
+  return vec
 
 -- | convert a vector of booleans to a bitvector
-bvPack :: forall sym. IsExprBuilder sym =>
+bvPack :: forall sym. (W.IsExpr (W.SymExpr sym), IsExprBuilder sym) =>
   sym -> Vector (Pred sym) -> IO (SWord sym)
 bvPack sym vec = do
   vec' <- V.mapM (\p -> do
-                     v1 <- bvLit sym 1 0
-                     v2 <- bvLit sym 1 1
+                     v1 <- bvLit sym 1 1
+                     v2 <- bvLit sym 1 0
                      bvIte sym p v1 v2) vec
   
-  V.foldM (bvJoin sym) ZBV vec'
+  V.foldM (\x y -> bvJoin sym y x) ZBV vec'
 
 ----------------------------------------------------------------------
 -- Generic wrapper for unary operators
@@ -310,7 +292,7 @@ bvBin  :: forall sym. IsExprBuilder sym =>
   (forall w. 1 <= w => sym -> SymBV sym w -> SymBV sym w -> IO (SymBV sym w)) ->
   sym -> SWord sym -> SWord sym -> IO (SWord sym)
 bvBin f sym (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
-  | Just Refl <- testEquality (repr @w1) (repr @w2) 
+  | Just Refl <- testEquality (knownNat @w1) (knownNat @w2) 
   = DBV <$> f sym bv1 bv2
 bvBin _ _ ZBV ZBV
   = return ZBV  
@@ -323,10 +305,10 @@ bvBinPred  :: forall sym. IsExprBuilder sym =>
   (forall w. 1 <= w => sym -> SymBV sym w -> SymBV sym w -> IO (Pred sym)) ->
   sym -> SWord sym -> SWord sym -> IO (Pred sym)
 bvBinPred f sym (DBV (bv1:: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
-  | Just Refl <- testEquality (repr @w1) (repr @w2) 
+  | Just Refl <- testEquality (knownNat @w1) (knownNat @w2) 
   = f sym bv1 bv2
   | otherwise
-  = fail $ "bit vectors must have same length" ++ show (repr @w1) ++ " " ++ show (repr @w2)
+  = fail $ "bit vectors must have same length" ++ show (knownNat @w1) ++ " " ++ show (knownNat @w2)
 bvBinPred _ _ ZBV ZBV
   = fail "no zero-length bit vectors here"  
 bvBinPred _ _ _ _ 
@@ -337,7 +319,7 @@ bvBinPred _ _ _ _
  -- Bitvector logical
 
 bvNot :: SWordUn
-bvNot = bvUn W.bvNeg 
+bvNot = bvUn W.bvNotBits
 
 bvAnd :: SWordBin
 bvAnd = bvBin W.bvAndBits
@@ -445,26 +427,6 @@ bvRor _sym (DBV bv) ZBV = return $ DBV bv
 -- bvRotateL (BV w x) i = Prim.bv w ((x `shiftL` j) .|. (x `shiftR` (w - j)))
 --    where j = fromInteger (i `mod` toInteger w)
 
-bvRotateL :: forall sym w. (KnownNat w, IsExprBuilder sym, 1 <= w) => sym ->
-             SymBV sym w -> Integer -> IO (SymBV sym w)
-bvRotateL sym x i = do
-    x1 <- bvShl' sym (repr @w) pfalse x j
-    x2 <- bvShr' sym (W.bvLshr sym) (repr @w) pfalse x (w - j)
-    W.bvOrBits sym x1 x2             
-  where
-    pfalse :: Pred sym
-    pfalse = W.falsePred sym
-    
-    w :: Integer
-    w = natValue (repr @w)
-    
-    j :: Integer
-    j = i `mod` toInteger w
-
--- Concrete implementation
--- bvRotateL (BV w x) i = Prim.bv w ((x `shiftL` j) .|. (x `shiftR` (w - j)))
---    where j = fromInteger (i `mod` toInteger w)
-
 
 bvRotateL' :: forall sym w1. (KnownNat w1, IsExprBuilder sym,
                                   1 <= w1) => sym ->
@@ -481,7 +443,7 @@ bvRotateL' sym x i' = do
     jj <- W.natToInteger sym j
 
     -- jjj :: SimBV sym w
-    jjj <- W.integerToBV sym jj (repr @w1)
+    jjj <- W.integerToBV sym jj (knownNat @w1)
     
     x1 <- bvShiftL sym pfalse x jjj
 
@@ -489,7 +451,7 @@ bvRotateL' sym x i' = do
     -- wmj :: SymNat sym
     wmj <- W.natSub sym w' j
     wmjj <- W.natToInteger sym wmj
-    wmjjj <- W.integerToBV sym wmjj (repr @w1)
+    wmjjj <- W.integerToBV sym wmjj (knownNat @w1)
     
     x2 <- bvShiftR sym (W.bvLshr sym) pfalse x wmjjj
     W.bvOrBits sym x1 x2             
@@ -498,14 +460,8 @@ bvRotateL' sym x i' = do
     pfalse = W.falsePred sym
     
     w :: Natural
-    w = fromInteger (natValue (repr @w1))
+    w = fromInteger (natValue (knownNat @w1))
     
-
-    
-
-bvRotateR :: forall sym w. (KnownNat w, IsExprBuilder sym, 1 <= w) => sym ->
-             SymBV sym w -> Integer -> IO (SymBV sym w)
-bvRotateR sym x i = bvRotateL sym x (- i)
 
 bvRotateR' :: forall sym w1. (KnownNat w1, IsExprBuilder sym,
                                   1 <= w1) => sym ->
@@ -521,7 +477,7 @@ bvRotateR' sym x i = do
 bvShlInt :: forall sym. IsExprBuilder sym => sym ->
               Pred sym -> SWord sym -> Integer -> IO (SWord sym)
 bvShlInt sym p (DBV (bv :: SymBV sym w)) x
-  = DBV <$> bvShl' sym (repr @w) p bv x 
+  = DBV <$> bvShl' sym (knownNat @w) p bv x 
 bvShlInt _ _ ZBV _
   = return ZBV 
 
@@ -529,7 +485,7 @@ bvShlInt _ _ ZBV _
 bvShrInt :: forall sym. IsExprBuilder sym => sym ->
               Pred sym -> SWord sym -> Integer -> IO (SWord sym)
 bvShrInt sym p (DBV (bv :: SymBV sym w)) x
-  = DBV <$> bvShr' sym (W.bvLshr sym) (repr @w) p bv x 
+  = DBV <$> bvShr' sym (W.bvLshr sym) (knownNat @w) p bv x 
 bvShrInt _ _ ZBV _
   = return ZBV
 
@@ -537,7 +493,7 @@ bvShrInt _ _ ZBV _
 bvSShrInt :: forall sym. IsExprBuilder sym => sym ->
               Pred sym -> SWord sym -> Integer -> IO (SWord sym)
 bvSShrInt sym p (DBV (bv :: SymBV sym w)) x
-  = DBV <$> bvShr' sym (W.bvAshr sym) (repr @w) p bv x 
+  = DBV <$> bvShr' sym (W.bvAshr sym) (knownNat @w) p bv x 
 bvSShrInt _ _ ZBV _
   = return ZBV   
 
@@ -551,15 +507,15 @@ bvShl    :: forall sym. IsExprBuilder sym => sym ->
               -- ^ amount to shift by
               IO (SWord sym)
 bvShl sym p (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
-  | Just Refl <- testEquality (repr @w1) (repr @w2) 
+  | Just Refl <- testEquality (knownNat @w1) (knownNat @w2) 
   = DBV <$> bvShiftL sym p bv1 bv2
   -- amount to shift by is smaller
-  | Just LeqProof <- testLeq (addNat (repr @w2) (repr @1)) (repr @w1)
-  = do bv2' <- W.bvZext sym (repr @w1) bv2
+  | Just LeqProof <- testLeq (addNat (knownNat @w2) (knownNat @1)) (knownNat @w1)
+  = do bv2' <- W.bvZext sym (knownNat @w1) bv2
        DBV <$> bvShiftL sym p bv1 bv2'
   | otherwise
   = fail $ "bvShl: bit vectors must have same length "
-            ++ show (repr @w1) ++ " " ++ show (repr @w2)
+            ++ show (knownNat @w1) ++ " " ++ show (knownNat @w2)
 bvShl _ _ ZBV ZBV
   = return ZBV
 bvShl _ _ _ _
@@ -570,14 +526,14 @@ bvShl _ _ _ _
 bvShr    :: forall sym. IsExprBuilder sym => sym ->
               Pred sym -> SWord sym -> SWord sym -> IO (SWord sym)
 bvShr  sym p (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
-  | Just Refl <- testEquality (repr @w1) (repr @w2) 
+  | Just Refl <- testEquality (knownNat @w1) (knownNat @w2) 
   = DBV <$> bvShiftR sym (W.bvLshr sym) p bv1 bv2
-  | Just LeqProof <- testLeq (addNat (repr @w2) (repr @1)) (repr @w1)
-  = do bv2' <- W.bvZext sym (repr @w1) bv2
+  | Just LeqProof <- testLeq (addNat (knownNat @w2) (knownNat @1)) (knownNat @w1)
+  = do bv2' <- W.bvZext sym (knownNat @w1) bv2
        DBV <$> bvShiftR sym (W.bvLshr sym) p bv1 bv2'
   | otherwise
   = fail $ "bvShr: bitvectors do not have the same length "
-         ++ show (repr @w1) ++ " " ++ show (repr @w2)
+         ++ show (knownNat @w1) ++ " " ++ show (knownNat @w2)
 bvShr _ _ ZBV ZBV
   = return ZBV
 bvShr _ _ _ _
@@ -588,14 +544,14 @@ bvShr _ _ _ _
 bvSShr    :: forall sym. IsExprBuilder sym => sym ->
               Pred sym -> SWord sym -> SWord sym -> IO (SWord sym)
 bvSShr  sym p (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
-  | Just Refl <- testEquality (repr @w1) (repr @w2) 
+  | Just Refl <- testEquality (knownNat @w1) (knownNat @w2) 
   = DBV <$> bvShiftR sym (W.bvAshr sym) p bv1 bv2
-  | Just LeqProof <- testLeq (addNat (repr @w2) (repr @1)) (repr @w1)
-  = do bv2' <- W.bvSext sym (repr @w1) bv2
+  | Just LeqProof <- testLeq (addNat (knownNat @w2) (knownNat @1)) (knownNat @w1)
+  = do bv2' <- W.bvSext sym (knownNat @w1) bv2
        DBV <$> bvShiftR sym (W.bvAshr sym) p bv1 bv2'
   | otherwise
   = fail $ "bvSShr: bitvectors do not have the same length: "
-           ++ show (repr @w1) ++ " " ++ show (repr @w2)
+           ++ show (knownNat @w1) ++ " " ++ show (knownNat @w2)
 bvSShr _ _ ZBV ZBV
   = return ZBV
 bvSShr _ _ _ _

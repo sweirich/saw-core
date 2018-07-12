@@ -30,6 +30,7 @@
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE TypeApplications #-}
 
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 
 {-# OPTIONS_GHC -fdefer-type-errors #-}
@@ -71,16 +72,16 @@ import Verifier.SAW.Simulator.Value
 import Verifier.SAW.TypedAST (FieldName, ModuleMap, identName)
 import Verifier.SAW.FiniteValue (FirstOrderType(..))
 
-import           What4.Interface(SymExpr,Pred,SymInteger,IsExprBuilder,IsSymExprBuilder)
+import           What4.Interface(SymExpr,Pred,SymInteger,
+                                 IsExprBuilder,IsSymExprBuilder)
 import qualified What4.Interface as W
 import           What4.BaseTypes
 
 import Data.Reflection (Given(..))
 import Data.Parameterized.Some
 
-import Data.Proxy
-
 import Verifier.SAW.Simulator.What4.SWord
+import Verifier.SAW.Simulator.What4.PosNat
 import Verifier.SAW.Simulator.What4.FirstOrder
 
 ---------------------------------------------------------------------
@@ -217,7 +218,8 @@ toBool :: SValue sym -> IO (SBool sym)
 toBool (VBool b) = return b
 toBool x         = fail $ unwords ["Verifier.SAW.Simulator.What4.toBool", show x]
 
-toWord :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym -> IO (SWord sym)
+toWord :: forall sym. (Given sym, IsExprBuilder sym) =>
+          SValue sym -> IO (SWord sym)
 toWord (VWord w)    = return w
 toWord (VVector vv) = do
   -- vec :: Vector (SBool sym))
@@ -226,7 +228,8 @@ toWord (VVector vv) = do
   bvPack (given :: sym) vec2
 toWord x            = fail $ unwords ["Verifier.SAW.Simulator.What4.toWord", show x]
 
-wordFun :: (IsExprBuilder sym, Given sym) => (SWord sym -> IO (SValue sym)) -> SValue sym
+wordFun :: (IsExprBuilder sym, Given sym) =>
+           (SWord sym -> IO (SValue sym)) -> SValue sym
 wordFun f = strictFun (\x -> f =<< toWord x)
 
 --
@@ -242,13 +245,15 @@ natToIntOp =
 -- interpret bitvector as unsigned integer
 -- primitive bvToInt :: (n::Nat) -> bitvector n -> Integer;
 bvToIntOp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
-bvToIntOp = constFun $ wordFun $ \(v :: SWord sym) ->
+bvToIntOp = constFun $ wordFun $ \(v :: SWord sym) -> do
+  print $ "bvToIntOp:" ++ show v
   VInt <$> bvToInteger (given :: sym) v
 
 -- interpret bitvector as signed integer
 -- primitive sbvToInt :: (n::Nat) -> bitvector n -> Integer;
 sbvToIntOp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
-sbvToIntOp = constFun $ wordFun $ \v ->
+sbvToIntOp = constFun $ wordFun $ \v -> do
+   print $ "sbvToIntOp:" ++ show v
    VInt <$> sbvToInteger (given :: sym) v
 
 -- primitive intToBv :: (n::Nat) -> Integer -> bitvector n;
@@ -276,7 +281,7 @@ bvShiftOp bvOp natOp =
       VNat i   -> VWord <$> natOp x j
         where j = i `min` toInteger (intSizeOf x)
       VToNat v -> VWord <$> (bvOp x =<< toWord v) 
-      _        -> error $ unwords ["Verifier.SAW.Simulator.What4.SWord.bvShiftOp", show y]
+      _        -> error $ unwords ["Verifier.SAW.Simulator.What4.bvShiftOp", show y]
 
 -- bvShl :: (w :: Nat) -> bitvector w -> Nat -> bitvector w;
 bvShLOp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
@@ -378,14 +383,14 @@ parseUninterpreted nm ty =
       -> return $ VWord ZBV
 
     VVecType (VNat n) VBoolType
-      | Just (Some (PosNat (_::Proxy n))) <- somePosNat n 
-      -> (VWord . DBV) <$> mkUninterpreted @sym nm (BaseBVRepr (repr @n))
+      | Just (Some (PosNat nr)) <- somePosNat n 
+      -> (VWord . DBV) <$> mkUninterpreted @sym nm (BaseBVRepr nr)
 
     VVecType (VNat 0) _
       -> fail "TODO: 0-width non-bitvectors unsupported"
 
     VVecType (VNat n) ety
-      | Just (Some (PosNat (_::Proxy n))) <- somePosNat n      
+      | Just (Some (PosNat _)) <- somePosNat n      
       ->  do xs <- sequence $
                   [ parseUninterpreted (nm ++ "@" ++ show i) ety
                   | i <- [0 .. n-1] ]
@@ -544,6 +549,26 @@ vAsFirstOrderType v =
 -- | Generate a new symbolic value (a variable) from a given first-order-type
 
 
+data TypedExpr sym where
+  TypedExpr :: BaseTypeRepr ty -> SymExpr sym ty -> TypedExpr sym
+
+
+-- | Generate a new variable from a given BaseType
+
+freshVar :: forall sym ty. (IsSymExprBuilder sym, Given sym) =>
+  BaseTypeRepr ty -> String -> IO (TypedExpr sym)
+freshVar ty str =
+  case W.userSymbol str of
+    Right solverSymbol -> do
+      c <- W.freshConstant (given :: sym) solverSymbol ty
+      return (TypedExpr ty c)
+    Left _ ->
+      fail $ "Cannot create solver symbol " ++ str
+
+nextId :: StateT Int IO String
+nextId = ST.get >>= (\s-> modify (+1) >> return ("x" ++ show s))
+
+
 newVarsForType :: forall sym. (Given sym, IsSymExprBuilder sym) => 
   SValue sym -> String -> StateT Int IO (Maybe (Labeler sym), SValue sym)
 newVarsForType v nm =
@@ -594,7 +619,7 @@ newVarFOT fot
 
 
 
-typedToSValue :: TypedExpr sym -> IO (SValue sym)
+typedToSValue :: (W.IsExpr (SymExpr sym)) => TypedExpr sym -> IO (SValue sym)
 typedToSValue (TypedExpr ty expr) =
   case ty of
     BaseBoolRepr         -> return $ VBool expr

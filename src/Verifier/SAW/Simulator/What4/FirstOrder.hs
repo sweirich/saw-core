@@ -9,6 +9,8 @@
 --
 -- Connect What4's 'BaseType' with saw-core's 'FirstOrderType'
 -- (both types and values of Base/FirstOrder type)
+-- TODO NOTE: support for tuples, arrays and records is not complete
+-- but is also unused in Verifier.SAW.Simulator.What4
 ------------------------------------------------------------------------
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE TypeOperators #-}
@@ -17,68 +19,41 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE PatternGuards #-}
 
-module Verifier.SAW.Simulator.What4.FirstOrder where
+module Verifier.SAW.Simulator.What4.FirstOrder
+  (
+    fotToBaseType,
+    typeReprToFOT,
+    groundToFOV
+  ) where
 
-import Prelude
-import qualified Prelude (replicate)
-import Data.Proxy
 import Data.Parameterized.NatRepr (natValue)
 import Data.Parameterized.TraversableFC (FoldableFC(..))
-import Data.Parameterized.Some
-import Data.Parameterized.Context 
+import Data.Parameterized.Some(Some(..))
+import Data.Parameterized.Context hiding (replicate)
 
+import Verifier.SAW.Simulator.What4.PosNat
 
 import Verifier.SAW.FiniteValue (FirstOrderType(..),FirstOrderValue(..))
 import Verifier.SAW.Prim (Nat(..))
 
-import What4.Interface
 import What4.BaseTypes
 import What4.Expr.GroundEval
 
-import Verifier.SAW.Simulator.What4.SWord
-
-import Data.Reflection (Given(..))
-
-import Control.Monad.State as ST
-
 ---------------------------------------------------------------------
 
-data TypedExpr sym where
-  TypedExpr :: BaseTypeRepr ty -> SymExpr sym ty -> TypedExpr sym
-
----------------------------------------------------------------------
-
--- | Generate a new variable from a given BaseType
-
-freshVar :: forall sym ty. (IsSymExprBuilder sym, Given sym) =>
-  BaseTypeRepr ty -> String -> IO (TypedExpr sym)
-freshVar ty str =
-  case userSymbol str of
-    Right solverSymbol -> do
-      c <- freshConstant (given :: sym) solverSymbol ty
-      return (TypedExpr ty c)
-    Left _ ->
-      fail $ "Cannot create solver symbol " ++ str
-
-nextId :: StateT Int IO String
-nextId = ST.get >>= (\s-> modify (+1) >> return ("x" ++ show s))
-
----------------------------------------------------------------------
---
 -- | Convert a type expression from SAW-core to What4
---
 fotToBaseType :: FirstOrderType -> Some BaseTypeRepr
 fotToBaseType FOTBit
   = Some BaseBoolRepr
 fotToBaseType FOTInt
   = Some BaseIntegerRepr
 fotToBaseType (FOTVec nat FOTBit)
-  | Just (Some (PosNat (_ :: Proxy nat))) <- somePosNat (toInteger nat)
-  = Some (BaseBVRepr (repr @nat))
-  | otherwise
-  = error "Cannot create 0-bit bitvector"
+  | Just (Some (PosNat nr)) <- somePosNat (toInteger nat)
+  = Some (BaseBVRepr nr)
+  | otherwise  -- 0-width bit vector is 0
+  = Some BaseIntegerRepr
 fotToBaseType (FOTVec nat fot) 
-  | Some assn <- listToAssn (Prelude.replicate (fromInteger (unNat nat)) fot)
+  | Some assn <- listToAssn (replicate (fromInteger (unNat nat)) fot)
   = Some (BaseStructRepr assn)
 fotToBaseType (FOTTuple fots) 
   | Some assn <- listToAssn fots
@@ -92,24 +67,18 @@ listToAssn (fot:rest) =
   case (fotToBaseType fot, listToAssn rest) of
     (Some bt, Some assn) -> Some $ extend assn bt
 
-
-  
 ---------------------------------------------------------------------
--- Convert between BaseTypes and FirstOrderTypes
--- and between GroundValues and FirstOrderValues
-
-natReprToNat :: NatRepr n -> Nat
-natReprToNat = Nat . natValue 
+-- | Convert a type expression from What4 to SAW-core
 
 typeReprToFOT :: BaseTypeRepr ty -> Either String FirstOrderType
-typeReprToFOT BaseBoolRepr          = pure FOTBit
-typeReprToFOT BaseNatRepr           = pure FOTInt
-typeReprToFOT BaseIntegerRepr       = pure FOTInt
-typeReprToFOT BaseRealRepr          = fail "No FO Real"
-typeReprToFOT (BaseBVRepr w)        = pure $ FOTVec (natReprToNat w) FOTBit
-typeReprToFOT BaseComplexRepr       = fail "No FO Complex"
-typeReprToFOT BaseStringRepr        = fail "No FO String"
-typeReprToFOT (BaseArrayRepr _ctx _b) = fail "Ugh"
+typeReprToFOT BaseBoolRepr            = pure FOTBit
+typeReprToFOT BaseNatRepr             = pure FOTInt
+typeReprToFOT BaseIntegerRepr         = pure FOTInt
+typeReprToFOT (BaseBVRepr w)          = pure $ FOTVec (Nat (natValue w)) FOTBit
+typeReprToFOT BaseRealRepr            = fail "No FO Real"
+typeReprToFOT BaseComplexRepr         = fail "No FO Complex"
+typeReprToFOT BaseStringRepr          = fail "No FO String"
+typeReprToFOT (BaseArrayRepr _ctx _b) = fail "TODO: FO Arrays"
 typeReprToFOT (BaseStructRepr ctx)    = FOTTuple <$> assnToList ctx
 
 assnToList :: Assignment BaseTypeRepr ctx -> Either String [FirstOrderType]
@@ -117,16 +86,20 @@ assnToList = foldrFC g (Right []) where
   g :: BaseTypeRepr x -> Either String [FirstOrderType] -> Either String [FirstOrderType]
   g ty l = (:) <$> typeReprToFOT ty <*> l
 
+
+---------------------------------------------------------------------
+-- | Convert between What4 GroundValues and saw-core FirstOrderValues
+
 groundToFOV :: BaseTypeRepr ty -> GroundValue ty -> Either String FirstOrderValue
-groundToFOV BaseBoolRepr    b       = pure $ FOVBit b
-groundToFOV BaseNatRepr     _       = fail "TODO: Natural"
-groundToFOV BaseIntegerRepr i       = pure $ FOVInt i
-groundToFOV BaseRealRepr    _       = fail "Real is not FOV"
-groundToFOV (BaseBVRepr w) bv       = pure $ FOVWord (natReprToNat w) bv
-groundToFOV BaseComplexRepr       _ = fail "Complex is not FOV"
-groundToFOV BaseStringRepr        _ = fail "String is not FOV"
-groundToFOV (BaseArrayRepr _idx _b) _ = fail "TODO"
-groundToFOV (BaseStructRepr ctx) tup = FOVTuple <$> (tupleToList ctx tup)
+groundToFOV BaseBoolRepr    b         = pure $ FOVBit b
+groundToFOV BaseNatRepr     n         = pure $ FOVInt (toInteger n)
+groundToFOV BaseIntegerRepr i         = pure $ FOVInt i
+groundToFOV (BaseBVRepr w) bv         = pure $ FOVWord (Nat (natValue w)) bv
+groundToFOV BaseRealRepr    _         = fail "Real is not FOV"
+groundToFOV BaseComplexRepr         _ = fail "Complex is not FOV"
+groundToFOV BaseStringRepr          _ = fail "String is not FOV"
+groundToFOV (BaseArrayRepr _idx _b) _ = fail "TODO: FOV Array"
+groundToFOV (BaseStructRepr ctx) tup  = FOVTuple <$> tupleToList ctx tup
 
 
 tupleToList :: Assignment BaseTypeRepr ctx ->
@@ -137,6 +110,4 @@ tupleToList (viewAssign -> AssignExtend rs r) (viewAssign -> AssignExtend gvs gv
 tupleToList _ _ = error "GADTs should rule this out."
 
 
---labelToFOV :: Labeler sym -> Either String FirstOrderValue
---labelToFOV (BaseLabel repr) 
 
