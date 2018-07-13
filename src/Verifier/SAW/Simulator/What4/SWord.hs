@@ -48,8 +48,8 @@ module Verifier.SAW.Simulator.What4.SWord where
 
 -- Question: Why do the functions in What4.Interface take
 -- NatRepr's as arguments instead of implicit KnownNats ?
--- We then could use TypeApplications instead of constructing these
--- repr's all over the place.
+-- We then could use TypeApplications instead of constructing 
+-- reprs.
 -- Overall, the operations below are a bit random about whether they
 -- require an implicit or explicit type argument.
 
@@ -67,7 +67,6 @@ import           Verifier.SAW.Simulator.What4.PosNat
 
 import           What4.Interface(SymBV,Pred,SymInteger,IsExpr,SymExpr,IsExprBuilder)
 import qualified What4.Interface as W
-
 
 -------------------------------------------------------------
 --
@@ -92,7 +91,7 @@ instance Show (SWord sym) where
 -- | Return the signed value if this is a constant bitvector
 bvAsSignedInteger :: forall sym. IsExprBuilder sym => SWord sym -> Maybe Integer
 bvAsSignedInteger ZBV = Just 0
-bvAsSignedInteger (DBV (bv :: SymBV sym w)) =
+bvAsSignedInteger (DBV (bv :: SymBV sym w)) = 
   W.asSignedBV bv
 
 -- | Return the unsigned value if this is a constant bitvector
@@ -105,7 +104,7 @@ bvAsUnsignedInteger (DBV (bv :: SymBV sym w)) =
 --   Result is undefined if integer is outside of range.
 integerToBV :: forall sym width. (Integral width, IsExprBuilder sym) =>
   sym ->  SymInteger sym -> width -> IO (SWord sym)
-integerToBV sym i w 
+integerToBV sym i w
   | Just (Some (PosNat wr)) <- somePosNat (toInteger w)
   = DBV <$> W.integerToBV sym i wr
   | 0 == toInteger w
@@ -143,8 +142,8 @@ bvLit _ w _
   | w == 0
   = return ZBV
 bvLit sym w dat
-  | Just (Some (PosNat (_ :: NatRepr w))) <- somePosNat (toInteger w)
-  = DBV <$> W.bvLit sym (knownNat @w) dat
+  | Just (Some (PosNat rw)) <- somePosNat (toInteger w)
+  = DBV <$> W.bvLit sym rw dat
   | otherwise
   = fail "bvLit: size of bitvector is < 0 or >= maxInt"
 
@@ -153,11 +152,12 @@ bvAt :: forall sym. IsExprBuilder sym =>
   sym ->
   SWord sym ->
   Int ->
-  -- ^ Index of bit (0 is the least significant bit)
+  -- ^ Index of bit (0 is the most significant bit)
   IO (Pred sym)
-bvAt sym (DBV (bv :: SymBV sym w)) idx = do
-  -- print $ "indexing at " ++ show idx
-  W.testBitBV sym (toInteger idx) bv
+bvAt sym (DBV (bv :: SymBV sym w)) i = do
+  let w   = toInteger (natValue (knownNat @w))
+  let idx = w - 1 - toInteger i
+  W.testBitBV sym idx bv
 bvAt _ ZBV _ = fail "cannot index into empty bitvector"
   -- TODO: or could return 0?
 
@@ -246,9 +246,8 @@ bvUnpack _   ZBV = return V.empty
 bvUnpack sym (DBV (bv :: SymBV sym w)) = do
   let w :: Integer
       w = natValue (knownNat @w)
-  vec <- V.generateM (fromIntegral w)
+  V.generateM (fromIntegral w)
               (\i -> W.testBitBV sym (w - 1 - toInteger i) bv)
-  return vec
 
 -- | convert a vector of booleans to a bitvector
 bvPack :: forall sym. (W.IsExpr (W.SymExpr sym), IsExprBuilder sym) =>
@@ -258,8 +257,7 @@ bvPack sym vec = do
                      v1 <- bvLit sym 1 1
                      v2 <- bvLit sym 1 0
                      bvIte sym p v1 v2) vec
-  
-  V.foldM (\x y -> bvJoin sym y x) ZBV vec'
+  V.foldM (\x y -> bvJoin sym x y) ZBV vec'
 
 ----------------------------------------------------------------------
 -- Generic wrapper for unary operators
@@ -432,7 +430,7 @@ bvRotateL' :: forall sym w1. (KnownNat w1, IsExprBuilder sym,
                                   1 <= w1) => sym ->
              SymBV sym w1 -> SymInteger sym -> IO (SymBV sym w1)
 bvRotateL' sym x i' = do
-  
+    
     -- w' :: SymNat sym
     w' <- W.natLit sym w
 
@@ -446,7 +444,6 @@ bvRotateL' sym x i' = do
     jjj <- W.integerToBV sym jj (knownNat @w1)
     
     x1 <- bvShiftL sym pfalse x jjj
-
 
     -- wmj :: SymNat sym
     wmj <- W.natSub sym w' j

@@ -52,6 +52,8 @@ module Verifier.SAW.Simulator.What4
 
 import qualified Control.Arrow as A
 
+import Data.Bits
+import Data.IORef
 import Data.Map (Map)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -63,6 +65,7 @@ import Data.Traversable as T
 import Control.Applicative
 #endif
 import Control.Monad.State as ST
+
 
 import qualified Verifier.SAW.Recognizer as R
 import qualified Verifier.SAW.Simulator as Sim
@@ -84,6 +87,9 @@ import Verifier.SAW.Simulator.What4.SWord
 import Verifier.SAW.Simulator.What4.PosNat
 import Verifier.SAW.Simulator.What4.FirstOrder
 
+
+--import Debug.Trace
+
 ---------------------------------------------------------------------
 -- the type index is a sym
 data What4 (t :: *)
@@ -101,10 +107,9 @@ type instance Extra (What4 sym) = What4Extra sym
 type SValue sym = Value (What4 sym)
 
 ---------------------------------------------------------------------
--- TODO: implement streams(?)
-data What4Extra sym = SStream () ()
---  SStream (Integer -> IO SValue) (IORef (Map Integer SValue))
 
+data What4Extra sym =
+  SStream (Integer -> IO (SValue sym)) (IORef (Map Integer (SValue sym)))
 
 instance Show (What4Extra sym) where
   show (SStream _ _) = "<SStream>"
@@ -132,7 +137,7 @@ prims =
   , Prims.bpMuxBool  = W.itePred sym 
   , Prims.bpMuxWord  = bvIte     sym
   , Prims.bpMuxInt   = W.intIte  sym
-  , Prims.bpMuxExtra = undefined -- TODO
+  , Prims.bpMuxExtra = extraFn
     -- Booleans
   , Prims.bpTrue   = W.truePred  sym
   , Prims.bpFalse  = W.falsePred sym
@@ -206,9 +211,9 @@ constMap =
   , ("Prelude.bvToInt" , bvToIntOp)
   , ("Prelude.sbvToInt", sbvToIntOp)
   -- Streams
-{-  , ("Prelude.MkStream", mkStreamOp)
+  , ("Prelude.MkStream", mkStreamOp)
   , ("Prelude.streamGet", streamGetOp)
-  , ("Prelude.bvStreamGet", bvStreamGetOp) -}
+  , ("Prelude.bvStreamGet", bvStreamGetOp) 
   ]
 
 -----------------------------------------------------------------------
@@ -246,14 +251,12 @@ natToIntOp =
 -- primitive bvToInt :: (n::Nat) -> bitvector n -> Integer;
 bvToIntOp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
 bvToIntOp = constFun $ wordFun $ \(v :: SWord sym) -> do
-  print $ "bvToIntOp:" ++ show v
   VInt <$> bvToInteger (given :: sym) v
 
 -- interpret bitvector as signed integer
 -- primitive sbvToInt :: (n::Nat) -> bitvector n -> Integer;
 sbvToIntOp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
 sbvToIntOp = constFun $ wordFun $ \v -> do
-   print $ "sbvToIntOp:" ++ show v
    VInt <$> sbvToInteger (given :: sym) v
 
 -- primitive intToBv :: (n::Nat) -> Integer -> bitvector n;
@@ -314,7 +317,6 @@ intMax sym i1 i2 = do
   p <- W.intLt sym i1 i2
   W.intIte sym p i2 i1 
 
--- TODO: fix
 -- undefined if either argument is negative
 intDiv :: (IsExprBuilder sym) => sym -> SInt sym -> SInt sym -> IO (SInt sym)
 intDiv sym i1 i2 = do
@@ -323,13 +325,87 @@ intDiv sym i1 i2 = do
   n3 <- W.natDiv sym n1 n2
   W.natToInteger sym n3
 
--- TODO: fix
 -- undefined if second argument is negative
 intMod :: (IsExprBuilder sym) => sym -> SInt sym -> SInt sym -> IO (SInt sym)
 intMod sym i1 i2 = do
   n2 <- W.integerToNat sym i2
   n3 <- W.intMod sym i1 n2
   W.natToInteger sym n3
+
+------------------------------------------------------------
+-- Stream operations
+
+-- MkStream :: (a :: sort 0) -> (Nat -> a) -> Stream a;
+mkStreamOp :: SValue sym
+mkStreamOp =
+  constFun $
+  strictFun $ \f -> do
+    r <- newIORef Map.empty
+    return $ VExtra (SStream (\n -> apply f (ready (VNat n))) r)
+
+-- streamGet :: (a :: sort 0) -> Stream a -> Nat -> a;
+streamGetOp :: SValue sym
+streamGetOp =
+  constFun $
+  strictFun $ \xs -> return $
+  Prims.natFun'' "streamGetOp" $ \n -> lookupSStream xs (toInteger n)
+
+-- bvStreamGet :: (a :: sort 0) -> (w :: Nat) -> Stream a -> bitvector w -> a;
+bvStreamGetOp :: forall sym. (W.IsExpr (SymExpr sym),
+                              IsExprBuilder sym, Given sym) => SValue sym
+bvStreamGetOp =
+  constFun $
+  constFun $
+  strictFun $ \xs -> return $
+  wordFun $ \ilv ->
+  selectV (lazyMux @sym muxBVal) ((2 ^ intSizeOf ilv) - 1) (lookupSStream xs) ilv
+
+lookupSStream :: SValue sym -> Integer -> IO (SValue sym)
+lookupSStream (VExtra (SStream f r)) n = do
+   m <- readIORef r
+   case Map.lookup n m of
+     Just v  -> return v
+     Nothing -> do v <- f n
+                   writeIORef r (Map.insert n v m)
+                   return v
+lookupSStream _ _ = fail "expected Stream"
+
+
+muxBVal :: forall sym. (Given sym, IsExprBuilder sym) =>
+  SBool sym -> SValue sym -> SValue sym -> IO (SValue sym)
+muxBVal = Prims.muxValue prims
+
+extraFn :: SBool sym -> What4Extra sym -> What4Extra sym -> IO (What4Extra sym)
+extraFn _ _ _ = error "iteOp: malformed arguments (extraFn)"
+
+
+-- | Lifts a strict mux operation to a lazy mux
+lazyMux :: (W.IsExpr (SymExpr sym)) =>
+  (SBool sym  -> a -> a -> IO a) -> (SBool sym -> IO a -> IO a -> IO a)
+lazyMux muxFn c tm fm =
+  case W.asConstantPred c of
+    Just True  -> tm
+    Just False -> fm
+    Nothing    -> do
+      t <- tm
+      f <- fm
+      muxFn c t f
+
+-- selectV merger maxValue valueFn index returns valueFn v when index has value v
+-- if index is greater than maxValue, it returns valueFn maxValue. Use the ite op from merger.
+selectV :: forall sym a b. (Given sym, IsExprBuilder sym, Ord a, Num a, Bits a) => 
+  (SBool sym -> IO b -> IO b -> IO b) -> a -> (a -> IO b) -> SWord sym -> IO b
+selectV merger maxValue valueFn vx =
+  case bvAsUnsignedInteger vx of
+    Just i  -> valueFn (fromIntegral i)
+    Nothing -> impl (intSizeOf vx) 0
+  where
+    impl :: Int -> a -> IO b
+    impl _ x | x > maxValue || x < 0 = valueFn maxValue
+    impl 0 y = valueFn y
+    impl i y = do
+      p <- bvAt (given :: sym) vx j
+      merger p (impl j (y `setBit` j)) (impl j y) where j = i - 1
 
 -----------------------------------------------------------------------
 -- | A basic symbolic simulator/evaluator: interprets a saw-core Term as
