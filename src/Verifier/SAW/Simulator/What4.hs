@@ -75,7 +75,7 @@ import Verifier.SAW.Simulator.Value
 import Verifier.SAW.TypedAST (FieldName, ModuleMap, identName)
 import Verifier.SAW.FiniteValue (FirstOrderType(..))
 
-import           What4.Interface(SymExpr,Pred,SymInteger,
+import           What4.Interface(SymExpr,Pred,SymInteger, IsExpr,
                                  IsExprBuilder,IsSymExprBuilder)
 import qualified What4.Interface as W
 import           What4.BaseTypes
@@ -88,11 +88,10 @@ import Verifier.SAW.Simulator.What4.PosNat
 import Verifier.SAW.Simulator.What4.FirstOrder
 
 
---import Debug.Trace
-
 ---------------------------------------------------------------------
--- the type index is a sym
-data What4 (t :: *)
+-- empty datatype to index (open) type families
+-- for this backend
+data What4 (sym :: *)
 
 -- type abbreviations for uniform naming
 type SBool sym = Pred sym 
@@ -105,6 +104,9 @@ type instance VInt  (What4 sym) = SInt  sym
 type instance Extra (What4 sym) = What4Extra sym
 
 type SValue sym = Value (What4 sym)
+
+-- Constraint 
+type Sym sym = (Given sym, IsExprBuilder sym)
 
 ---------------------------------------------------------------------
 
@@ -119,7 +121,7 @@ instance Show (What4Extra sym) where
 -- Basic primitive table for What4 data 
 --
 
-prims :: forall sym. (Given sym, IsExprBuilder sym) =>
+prims :: forall sym. (Sym sym) =>
    Prims.BasePrims (What4 sym)
 prims =
   let sym :: sym = given in
@@ -195,7 +197,7 @@ prims =
   }
 
 
-constMap :: (Given sym, IsExprBuilder sym) => Map Ident (SValue sym)
+constMap :: (Sym sym) => Map Ident (SValue sym)
 constMap =
   Map.union (Prims.constMap prims) $
   Map.fromList
@@ -223,7 +225,7 @@ toBool :: SValue sym -> IO (SBool sym)
 toBool (VBool b) = return b
 toBool x         = fail $ unwords ["Verifier.SAW.Simulator.What4.toBool", show x]
 
-toWord :: forall sym. (Given sym, IsExprBuilder sym) =>
+toWord :: forall sym. (Sym sym) =>
           SValue sym -> IO (SWord sym)
 toWord (VWord w)    = return w
 toWord (VVector vv) = do
@@ -242,25 +244,25 @@ wordFun f = strictFun (\x -> f =<< toWord x)
 --
 
 -- primitive natToInt :: Nat -> Integer;
-natToIntOp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
+natToIntOp :: forall sym. (Sym sym) => SValue sym
 natToIntOp =
   Prims.natFun' "natToInt" $ \n -> 
     VInt <$> W.intLit (given :: sym) (toInteger n)
 
 -- interpret bitvector as unsigned integer
 -- primitive bvToInt :: (n::Nat) -> bitvector n -> Integer;
-bvToIntOp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
+bvToIntOp :: forall sym. (Sym sym) => SValue sym
 bvToIntOp = constFun $ wordFun $ \(v :: SWord sym) -> do
   VInt <$> bvToInteger (given :: sym) v
 
 -- interpret bitvector as signed integer
 -- primitive sbvToInt :: (n::Nat) -> bitvector n -> Integer;
-sbvToIntOp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
+sbvToIntOp :: forall sym. (Sym sym) => SValue sym
 sbvToIntOp = constFun $ wordFun $ \v -> do
    VInt <$> sbvToInteger (given :: sym) v
 
 -- primitive intToBv :: (n::Nat) -> Integer -> bitvector n;
-intToBvOp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
+intToBvOp :: forall sym. (Sym sym) => SValue sym
 intToBvOp =
   Prims.natFun' "intToBv n" $ \n -> return $
   Prims.intFun "intToBv x" $ \(x :: SymInteger sym) ->
@@ -272,7 +274,7 @@ intToBvOp =
 --
 
 -- | op :: (n :: Nat) -> bitvector n -> Nat -> bitvector n
-bvShiftOp :: (IsExprBuilder sym, Given sym) =>
+bvShiftOp :: (Sym sym) =>
              (SWord sym -> SWord sym -> IO (SWord sym)) ->
              (SWord sym -> Integer   -> IO (SWord sym)) -> SValue sym
 bvShiftOp bvOp natOp =
@@ -287,18 +289,18 @@ bvShiftOp bvOp natOp =
       _        -> error $ unwords ["Verifier.SAW.Simulator.What4.bvShiftOp", show y]
 
 -- bvShl :: (w :: Nat) -> bitvector w -> Nat -> bitvector w;
-bvShLOp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
+bvShLOp :: forall sym. (Sym sym) => SValue sym
 bvShLOp = bvShiftOp (bvShl    given (W.falsePred @sym given))
                     (bvShlInt given (W.falsePred @sym given))
 
 -- bvShR :: (w :: Nat) -> bitvector w -> Nat -> bitvector w;
-bvShROp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
+bvShROp :: forall sym. (Sym sym) => SValue sym
 bvShROp = bvShiftOp (bvShr    given (W.falsePred @sym given))
                     (bvShrInt given (W.falsePred @sym given))
 
 
 -- bvShR :: (w :: Nat) -> bitvector w -> Nat -> bitvector w;
-bvSShROp :: forall sym. (Given sym, IsExprBuilder sym) => SValue sym
+bvSShROp :: forall sym. (Sym sym) => SValue sym
 bvSShROp = bvShiftOp (bvSShr    given (W.falsePred @sym given))
                      (bvSShrInt given (W.falsePred @sym given))
 
@@ -351,8 +353,7 @@ streamGetOp =
   Prims.natFun'' "streamGetOp" $ \n -> lookupSStream xs (toInteger n)
 
 -- bvStreamGet :: (a :: sort 0) -> (w :: Nat) -> Stream a -> bitvector w -> a;
-bvStreamGetOp :: forall sym. (W.IsExpr (SymExpr sym),
-                              IsExprBuilder sym, Given sym) => SValue sym
+bvStreamGetOp :: forall sym. (IsExpr (SymExpr sym), Sym sym) => SValue sym
 bvStreamGetOp =
   constFun $
   constFun $
@@ -371,7 +372,7 @@ lookupSStream (VExtra (SStream f r)) n = do
 lookupSStream _ _ = fail "expected Stream"
 
 
-muxBVal :: forall sym. (Given sym, IsExprBuilder sym) =>
+muxBVal :: forall sym. (Sym sym) =>
   SBool sym -> SValue sym -> SValue sym -> IO (SValue sym)
 muxBVal = Prims.muxValue prims
 
@@ -380,7 +381,7 @@ extraFn _ _ _ = error "iteOp: malformed arguments (extraFn)"
 
 
 -- | Lifts a strict mux operation to a lazy mux
-lazyMux :: (W.IsExpr (SymExpr sym)) =>
+lazyMux :: (IsExpr (SymExpr sym)) =>
   (SBool sym  -> a -> a -> IO a) -> (SBool sym -> IO a -> IO a -> IO a)
 lazyMux muxFn c tm fm =
   case W.asConstantPred c of
@@ -393,7 +394,7 @@ lazyMux muxFn c tm fm =
 
 -- selectV merger maxValue valueFn index returns valueFn v when index has value v
 -- if index is greater than maxValue, it returns valueFn maxValue. Use the ite op from merger.
-selectV :: forall sym a b. (Given sym, IsExprBuilder sym, Ord a, Num a, Bits a) => 
+selectV :: forall sym a b. (Sym sym, Ord a, Num a, Bits a) => 
   (SBool sym -> IO b -> IO b -> IO b) -> a -> (a -> IO b) -> SWord sym -> IO b
 selectV merger maxValue valueFn vx =
   case bvAsUnsignedInteger vx of
@@ -695,7 +696,7 @@ newVarFOT fot
 
 
 
-typedToSValue :: (W.IsExpr (SymExpr sym)) => TypedExpr sym -> IO (SValue sym)
+typedToSValue :: (IsExpr (SymExpr sym)) => TypedExpr sym -> IO (SValue sym)
 typedToSValue (TypedExpr ty expr) =
   case ty of
     BaseBoolRepr         -> return $ VBool expr

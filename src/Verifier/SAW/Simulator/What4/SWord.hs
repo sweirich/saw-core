@@ -68,6 +68,7 @@ import           Verifier.SAW.Simulator.What4.PosNat
 import           What4.Interface(SymBV,Pred,SymInteger,IsExpr,SymExpr,IsExprBuilder)
 import qualified What4.Interface as W
 
+
 -------------------------------------------------------------
 --
 -- | A What4 symbolic bitvector where the size does not appear in the type
