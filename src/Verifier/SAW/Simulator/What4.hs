@@ -413,14 +413,14 @@ selectV merger maxValue valueFn vx =
 -- a symbolic value
 
 w4SolveBasic :: forall sym. (Given sym, IsSymExprBuilder sym) =>
-  ModuleMap ->
-  Map Ident (SValue sym) ->
+  ModuleMap 
+  -> Map Ident (SValue sym)
   -- ^ additional primatives
-  [String] ->
+  -> [String] 
   -- ^ 'unints' Constants in this list are kept uninterpreted
-  Term ->
+  -> Term 
   -- ^ term to simulate
-  IO (SValue sym)
+  -> IO (SValue sym)
 w4SolveBasic m addlPrims unints t = do
   let unintSet = Set.fromList unints
   let uninterpreted nm ty

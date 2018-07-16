@@ -52,6 +52,7 @@ import Data.Parameterized.Some(Some(..))
 -- different runtime representations of these positive nats --- the
 -- one stored in the KnownNat, and the one stored in the NatRepr.
 
+-- | Runtime representation of a non-zero natural number
 data PosNat (n :: Nat) where
   PosNat :: (1 <= n, KnownNat n) => NatRepr n -> PosNat n
 
@@ -86,6 +87,7 @@ addPosNat =
 
 --- Not needed but included for completeness
 
+-- | Compare for equality, returning witness if true
 instance TestEquality PosNat where
   testEquality (PosNat n1) (PosNat n2) =
     case testEquality n1 n2 of

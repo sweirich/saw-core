@@ -72,15 +72,13 @@ import qualified What4.Interface as W
 -------------------------------------------------------------
 --
 -- | A What4 symbolic bitvector where the size does not appear in the type
---
-
 data SWord sym where
   
   DBV :: (IsExpr (SymExpr sym), KnownNat w, 1<=w) => SymBV sym w -> SWord sym
-  -- ^ a bit-vector with positive length
+  -- a bit-vector with positive length
   
   ZBV :: SWord sym
-  -- ^ a zero-length bit vector. i.e. 0
+  -- a zero-length bit vector. i.e. 0
 
 
 instance Show (SWord sym) where
@@ -149,12 +147,10 @@ bvLit sym w dat
   = fail "bvLit: size of bitvector is < 0 or >= maxInt"
 
 -- | Returns true if the corresponding bit in the bitvector is set.
-bvAt :: forall sym. IsExprBuilder sym =>
-  sym ->
-  SWord sym ->
-  Int ->
-  -- ^ Index of bit (0 is the most significant bit)
-  IO (Pred sym)
+bvAt :: forall sym. IsExprBuilder sym => sym
+  -> SWord sym
+  -> Int  -- ^ Index of bit (0 is the most significant bit)
+  -> IO (Pred sym)
 bvAt sym (DBV (bv :: SymBV sym w)) i = do
   let w   = toInteger (natValue (knownNat @w))
   let idx = w - 1 - toInteger i
@@ -163,13 +159,12 @@ bvAt _ ZBV _ = fail "cannot index into empty bitvector"
   -- TODO: or could return 0?
 
 -- | Concatenate two bitvectors.
-bvJoin  :: forall sym. IsExprBuilder sym =>
-  sym ->
-  SWord sym ->
+bvJoin  :: forall sym. IsExprBuilder sym => sym
+  -> SWord sym 
   -- ^ most significant bits
-  SWord sym ->
+  -> SWord sym 
   -- ^ least significant bits
-  IO (SWord sym)
+  -> IO (SWord sym)
 bvJoin _ x ZBV = return x
 bvJoin _ ZBV x = return x
 bvJoin sym (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
@@ -179,13 +174,12 @@ bvJoin sym (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
 -- | Select a subsequence from a bitvector.
 -- idx = w - (m + n)
 -- This fails if idx + n is >= w
-bvSlice :: forall sym. IsExprBuilder sym =>
-  sym ->
-  Int ->
+bvSlice :: forall sym. IsExprBuilder sym => sym
+  -> Int
   -- ^ Starting index, from 0 as most significant bit
-  Int ->
+  -> Int
   -- ^ Number of bits to take (must be > 0)
-  SWord sym -> IO (SWord sym)
+  -> SWord sym -> IO (SWord sym)
 bvSlice sym m n (DBV (bv :: SymBV sym w))
   | Just (Some (PosNat nr)) <- somePosNat (toInteger n),
     Just (Some mr)          <- someNat (toInteger m),
@@ -263,10 +257,14 @@ bvPack sym vec = do
 ----------------------------------------------------------------------
 -- Generic wrapper for unary operators
 ----------------------------------------------------------------------
+
+-- | Type of unary operation on bitvectors
 type SWordUn =
   forall sym. IsExprBuilder sym =>
   sym -> SWord sym -> IO (SWord sym)
 
+-- | Convert a unary operation on length indexed bvs to a unary operation
+-- on `SWord`
 bvUn ::  forall sym. IsExprBuilder sym =>
    (forall w. (KnownNat w, 1 <= w) => sym -> SymBV sym w -> IO (SymBV sym w)) ->
    sym -> SWord sym -> IO (SWord sym)
@@ -278,15 +276,17 @@ bvUn _ _  ZBV = return ZBV
 -- of the same length
 ----------------------------------------------------------------------
 
+-- | type of binary operation that returns a bitvector
 type SWordBin =
   forall sym. IsExprBuilder sym =>
   sym -> SWord sym -> SWord sym -> IO (SWord sym)
+-- | type of binary operation that returns a boolean
 type PredBin =
   forall sym. IsExprBuilder sym =>
   sym -> SWord sym -> SWord sym -> IO (Pred sym)
 
 
--- binary operations that return bitvectors
+-- | convert binary operations that return bitvectors
 bvBin  :: forall sym. IsExprBuilder sym =>
   (forall w. 1 <= w => sym -> SymBV sym w -> SymBV sym w -> IO (SymBV sym w)) ->
   sym -> SWord sym -> SWord sym -> IO (SWord sym)
@@ -299,7 +299,7 @@ bvBin _ _ _ _
   = fail "bit vectors must have same length"
 
 
--- binary operations that return booleans (Pred)
+-- | convert binary operations that return booleans (Pred)
 bvBinPred  :: forall sym. IsExprBuilder sym =>
   (forall w. 1 <= w => sym -> SymBV sym w -> SymBV sym w -> IO (Pred sym)) ->
   sym -> SWord sym -> SWord sym -> IO (Pred sym)
@@ -317,41 +317,72 @@ bvBinPred _ _ _ _
 
  -- Bitvector logical
 
+-- | Bitwise complement
 bvNot :: SWordUn
 bvNot = bvUn W.bvNotBits
 
+-- | Bitwise logical and.
 bvAnd :: SWordBin
 bvAnd = bvBin W.bvAndBits
 
+-- | Bitwise logical or.
 bvOr :: SWordBin
 bvOr = bvBin W.bvOrBits
 
+-- | Bitwise logical exclusive or.
 bvXor :: SWordBin
 bvXor = bvBin W.bvXorBits
 
  -- Bitvector arithmetic
-  
+
+-- | 2's complement negation.
 bvNeg :: SWordUn
 bvNeg = bvUn W.bvNeg
 
+-- | Add two bitvectors.
 bvAdd :: SWordBin
 bvAdd = bvBin W.bvAdd
 
+-- | Subtract one bitvector from another.
 bvSub :: SWordBin
 bvSub = bvBin W.bvSub
 
+-- | Multiply one bitvector by another.
 bvMul :: SWordBin
 bvMul = bvBin W.bvMul
 
+
+-- | Unsigned bitvector division.
+--
+--   The result is undefined when @y@ is zero,
+--   but is otherwise equal to @floor( x / y )@.
 bvUDiv :: SWordBin
 bvUDiv = bvBin W.bvUdiv
 
+
+-- | Unsigned bitvector remainder.
+--
+--   The result is undefined when @y@ is zero,
+--   but is otherwise equal to @x - (bvUdiv x y) * y@.
 bvURem :: SWordBin
 bvURem = bvBin W.bvUrem
 
+-- | Signed bitvector division.  The result is truncated to zero.
+--
+--   The result of @bvSdiv x y@ is undefined when @y@ is zero,
+--   but is equal to @floor(x/y)@ when @x@ and @y@ have the same sign,
+--   and equal to @ceiling(x/y)@ when @x@ and @y@ have opposite signs.
+--
+--   NOTE! However, that there is a corner case when dividing @MIN_INT@ by
+--   @-1@, in which case an overflow condition occurs, and the result is instead
+--   @MIN_INT@.
 bvSDiv :: SWordBin
 bvSDiv = bvBin W.bvSdiv
 
+-- | Signed bitvector remainder.
+--
+--   The result of @bvSrem x y@ is undefined when @y@ is zero, but is
+--   otherwise equal to @x - (bvSdiv x y) * y@.
 bvSRem :: SWordBin
 bvSRem = bvBin W.bvSrem
 
@@ -360,37 +391,47 @@ bvLg2 = bvUn w_bvLg2
 
  -- Bitvector comparisons
 
+-- | Return true if bitvectors are equal.
 bvEq   :: PredBin
 bvEq = bvBinPred W.bvEq
 
+-- | Signed less-than-or-equal.
 bvsle  :: PredBin
 bvsle = bvBinPred W.bvSle
-  
+
+-- | Signed less-than.
 bvslt  :: PredBin
 bvslt = bvBinPred W.bvSlt
 
+-- | Unsigned less-than-or-equal.
 bvule  :: PredBin
 bvule = bvBinPred W.bvUle
 
+-- | Unsigned less-than.
 bvult  :: PredBin
 bvult = bvBinPred W.bvUlt
 
+-- | Signed greater-than-or-equal.
 bvsge  :: PredBin
 bvsge = bvBinPred W.bvSge
 
+-- | Signed greater-than.
 bvsgt  :: PredBin
 bvsgt = bvBinPred W.bvSgt
 
+-- | Unsigned greater-than-or-equal.
 bvuge  :: PredBin
 bvuge = bvBinPred W.bvUge
 
+-- | Unsigned greater-than.
 bvugt  :: PredBin
 bvugt = bvBinPred W.bvUgt
 
 ----------------------------------------
 -- Bitvector rotations
 ----------------------------------------
-  
+
+-- | Rotate left by a concrete integer value
 bvRolInt :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> Integer -> IO (SWord sym)
 bvRolInt sym (DBV (bv :: SymBV sym w)) i = do
@@ -398,14 +439,17 @@ bvRolInt sym (DBV (bv :: SymBV sym w)) i = do
   DBV <$> bvRotateL' sym bv i'
 bvRolInt _sym ZBV _i = return ZBV
 
-  
+-- | Rotate right by a concrete integer value  
 bvRorInt :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> Integer -> IO (SWord sym)
 bvRorInt sym (DBV (bv :: SymBV sym w)) i = do
   i' <- W.intLit sym i
   DBV <$> bvRotateR' sym bv i'
 bvRorInt _sym ZBV _i = return ZBV
-  
+
+-- | Rotate left by a symbolic bitvector
+--
+-- The two bitvectors do not need to be the same length
 bvRol    :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> SWord sym -> IO (SWord sym)
 bvRol sym (DBV (bv :: SymBV sym w1)) (DBV (i :: SymBV sym w2)) = do
@@ -414,6 +458,9 @@ bvRol sym (DBV (bv :: SymBV sym w1)) (DBV (i :: SymBV sym w2)) = do
 bvRol _sym ZBV _i = return ZBV
 bvRol _sym (DBV bv) ZBV = return $ DBV bv
 
+-- | Rotate right by a symbolic bitvector
+--
+-- The two bitvectors do not need to be the same length
 bvRor    :: forall sym. IsExprBuilder sym => sym ->
               SWord sym -> SWord sym -> IO (SWord sym)
 bvRor sym (DBV (bv :: SymBV sym w1)) (DBV (i :: SymBV sym w2)) = do
@@ -422,13 +469,13 @@ bvRor sym (DBV (bv :: SymBV sym w1)) (DBV (i :: SymBV sym w2)) = do
 bvRor _sym ZBV _i = return ZBV
 bvRor _sym (DBV bv) ZBV = return $ DBV bv
 
--- Concrete implementation
+-- | Worker function for left rotations
+--
+-- Defined from the concrete implementation
+-- 
 -- bvRotateL (BV w x) i = Prim.bv w ((x `shiftL` j) .|. (x `shiftR` (w - j)))
 --    where j = fromInteger (i `mod` toInteger w)
-
-
-bvRotateL' :: forall sym w1. (KnownNat w1, IsExprBuilder sym,
-                                  1 <= w1) => sym ->
+bvRotateL' :: forall sym w1. (KnownNat w1, IsExprBuilder sym, 1 <= w1) => sym ->
              SymBV sym w1 -> SymInteger sym -> IO (SymBV sym w1)
 bvRotateL' sym x i' = do
     
@@ -461,8 +508,10 @@ bvRotateL' sym x i' = do
     w = fromInteger (natValue (knownNat @w1))
     
 
-bvRotateR' :: forall sym w1. (KnownNat w1, IsExprBuilder sym,
-                                  1 <= w1) => sym ->
+-- | Worker function for right rotations
+--
+-- Defined from the concrete implementation
+bvRotateR' :: forall sym w1. (KnownNat w1, IsExprBuilder sym, 1 <= w1) => sym ->
              SymBV sym w1 -> SymInteger sym -> IO (SymBV sym w1)
 bvRotateR' sym x i = do
   ii <- W.intNeg sym i
@@ -497,13 +546,13 @@ bvSShrInt _ _ ZBV _
 
 
 -- | logical shift left, amount specified by (symbolic) bitvector
-bvShl    :: forall sym. IsExprBuilder sym => sym ->
-              Pred sym ->
-              SWord sym ->
+bvShl    :: forall sym. IsExprBuilder sym => sym 
+              -> Pred sym 
+              -> SWord sym
               -- ^ shift this
-              SWord sym ->
+              -> SWord sym
               -- ^ amount to shift by
-              IO (SWord sym)
+              -> IO (SWord sym)
 bvShl sym p (DBV (bv1 :: SymBV sym w1)) (DBV (bv2 :: SymBV sym w2))
   | Just Refl <- testEquality (knownNat @w1) (knownNat @w2) 
   = DBV <$> bvShiftL sym p bv1 bv2
